@@ -1,0 +1,11 @@
+# Exported message data must never be committed -- keep it outside this repo
+# entirely (the script defaults to ~/iMessage-Export), but ignore it here too
+# in case someone points --output-dir at the repo by mistake.
+/messages.json
+/messages_data.js
+/attachments/
+/iMessage-Export/
+
+__pycache__/
+*.pyc
+.DS_Store

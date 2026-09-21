@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>iMessage Vault</title>
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --panel: #ffffff;
+    --border: #e2e2e5;
+    --text: #1c1c1e;
+    --text-secondary: #8a8a8e;
+    --bubble-me: #007aff;
+    --bubble-me-text: #ffffff;
+    --bubble-them: #e9e9eb;
+    --bubble-them-text: #1c1c1e;
+    --accent: #007aff;
+    --hover: #eef0f3;
+    --selected: #dfe8fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e;
+      --panel: #232326;
+      --border: #333336;
+      --text: #f2f2f2;
+      --text-secondary: #9a9a9e;
+      --bubble-me: #0a84ff;
+      --bubble-me-text: #ffffff;
+      --bubble-them: #3a3a3d;
+      --bubble-them-text: #f2f2f2;
+      --accent: #0a84ff;
+      --hover: #2c2c2f;
+      --selected: #2a3a52;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+  }
+  #app { display: flex; height: 100vh; }
+
+  #sidebar {
+    width: 320px;
+    min-width: 240px;
+    max-width: 45%;
+    resize: horizontal;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    background: var(--panel);
+  }
+  #sidebar-header {
+    padding: 14px 14px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  #sidebar-header h1 {
+    font-size: 17px;
+    margin: 0 0 10px;
+  }
+  #search {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+  }
+  #meta {
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 6px 14px 0;
+  }
+  #spam-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 8px;
+    cursor: pointer;
+  }
+  #spam-toggle input { cursor: pointer; }
+  #chat-list {
+    overflow-y: auto;
+    flex: 1;
+  }
+  .chat-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .chat-item:hover { background: var(--hover); }
+  .chat-item.selected { background: var(--selected); }
+  .chat-item .row1 {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .chat-item .name {
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .auto-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    background: var(--hover);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 4px;
+    vertical-align: middle;
+  }
+  .chat-item .date {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+  .chat-item .preview {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #thread {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  #thread-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  #thread-header .row1 { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  #thread-header .name { font-size: 15px; font-weight: 600; }
+  #thread-header .sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  #spam-btn {
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #spam-btn:hover { background: var(--hover); }
+  #spam-btn.is-spam { color: #ff3b30; border-color: #ff3b30; }
+
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+  }
+  .day-divider {
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin: 18px 0 10px;
+  }
+  .msg-row {
+    display: flex;
+    margin-bottom: 3px;
+  }
+  .msg-row.me { justify-content: flex-end; }
+  .msg-row.them { justify-content: flex-start; }
+  .bubble-wrap { max-width: 68%; }
+  .sender-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin: 6px 0 2px 4px;
+  }
+  .bubble {
+    padding: 8px 13px;
+    border-radius: 18px;
+    font-size: 14.5px;
+    line-height: 1.35;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+  }
+  .msg-row.me .bubble {
+    background: var(--bubble-me);
+    color: var(--bubble-me-text);
+    border-bottom-right-radius: 4px;
+  }
+  .msg-row.them .bubble {
+    background: var(--bubble-them);
+    color: var(--bubble-them-text);
+    border-bottom-left-radius: 4px;
+  }
+  .bubble.empty {
+    font-style: italic;
+    opacity: 0.7;
+  }
+  .att-img {
+    display: block;
+    max-width: 100%;
+    max-height: 280px;
+    border-radius: 14px;
+    margin-bottom: 3px;
+    cursor: pointer;
+    object-fit: cover;
+  }
+  .att-video, .att-audio {
+    display: block;
+    max-width: 100%;
+    max-height: 280px;
+    border-radius: 14px;
+    margin-bottom: 3px;
+  }
+  .att-audio { width: 260px; height: 32px; }
+  .att-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 14px;
+    background: var(--bubble-them);
+    color: var(--bubble-them-text);
+    font-size: 13px;
+    text-decoration: none;
+    margin-bottom: 3px;
+    max-width: fit-content;
+  }
+  .att-chip .att-size { color: var(--text-secondary); font-size: 11px; }
+  .att-missing {
+    padding: 8px 12px;
+    border-radius: 14px;
+    background: var(--bubble-them);
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    font-style: italic;
+    margin-bottom: 3px;
+    max-width: fit-content;
+  }
+  .msg-time {
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-align: center;
+    margin: 10px 0 2px;
+  }
+
+  #empty-state {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h1>iMessage Vault</h1>
+      <input id="search" type="text" placeholder="Search conversations or text…">
+      <label id="spam-toggle">
+        <input type="checkbox" id="hide-automated" checked>
+        Hide automated / marketing (<span id="automated-count"></span>)
+      </label>
+    </div>
+    <div id="meta"></div>
+    <div id="chat-list"></div>
+  </div>
+  <div id="thread">
+    <div id="empty-state">Select a conversation</div>
+  </div>
+</div>
+
+<script src="messages_data.js"></script>
+<script>
+const DATA = window.MESSAGES_DATA;
+const chatListEl = document.getElementById('chat-list');
+const threadEl = document.getElementById('thread');
+const searchEl = document.getElementById('search');
+const metaEl = document.getElementById('meta');
+const hideAutomatedEl = document.getElementById('hide-automated');
+const automatedCountEl = document.getElementById('automated-count');
+
+let selectedChatId = null;
+
+const sortedChats = [...DATA.chats].sort((a, b) => {
+  return new Date(b._last_date || 0) - new Date(a._last_date || 0);
+});
+
+// Manual spam/automated overrides, kept per-browser (this data never leaves your machine).
+const SPAM_KEY = 'imessage_viewer_spam_overrides';
+function loadSpamOverrides() {
+  try { return JSON.parse(localStorage.getItem(SPAM_KEY) || '{}'); } catch { return {}; }
+}
+function saveSpamOverrides(obj) {
+  try { localStorage.setItem(SPAM_KEY, JSON.stringify(obj)); } catch { /* private browsing, etc. */ }
+}
+let spamOverrides = loadSpamOverrides();
+
+function isAutomated(c) {
+  const ov = spamOverrides[c.chat_id];
+  return ov !== undefined ? ov : c.is_automated;
+}
+
+function refreshAutomatedCount() {
+  automatedCountEl.textContent = sortedChats.filter(isAutomated).length;
+}
+refreshAutomatedCount();
+metaEl.textContent = `${DATA.chat_count} conversations`;
+
+function previewText(c) {
+  const cleaned = cleanText(c._last_preview);
+  if (cleaned) return cleaned;
+  const last = c.messages[c.messages.length - 1];
+  const atts = last ? last.attachments : null;
+  if (atts && atts.length) {
+    const kind = atts[0].kind;
+    const icon = kind === 'image' ? '📷' : kind === 'video' ? '🎥' : kind === 'audio' ? '🎵' : '📎';
+    return atts.length === 1 ? `${icon} Attachment` : `${icon} ${atts.length} attachments`;
+  }
+  return '';
+}
+
+function fmtListDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const now = new Date();
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const diffDays = (now - d) / 86400000;
+  if (diffDays < 1 && d.getDate() === now.getDate()) {
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  return d.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function fmtDayDivider(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function renderChatList(filter) {
+  const q = (filter || '').toLowerCase().trim();
+  chatListEl.innerHTML = '';
+  const frag = document.createDocumentFragment();
+
+  let list = sortedChats;
+  if (hideAutomatedEl.checked) {
+    list = list.filter(c => !isAutomated(c));
+  }
+  if (q) {
+    list = list.filter(c => {
+      if ((c.name || '').toLowerCase().includes(q)) return true;
+      if ((c.identifier || '').toLowerCase().includes(q)) return true;
+      return c.messages.some(m => m.text && m.text.toLowerCase().includes(q));
+    });
+  }
+
+  for (const c of list) {
+    const item = document.createElement('div');
+    item.className = 'chat-item' + (c.chat_id === selectedChatId ? ' selected' : '');
+    item.dataset.chatId = c.chat_id;
+    item.innerHTML = `
+      <div class="row1">
+        <div class="name">${isAutomated(c) ? '<span class="auto-badge">auto</span> ' : ''}${escapeHtml(c.name || 'Unknown')}</div>
+        <div class="date">${fmtListDate(c._last_date)}</div>
+      </div>
+      <div class="preview">${escapeHtml(previewText(c))}</div>
+    `;
+    item.addEventListener('click', () => selectChat(c.chat_id));
+    frag.appendChild(item);
+  }
+  chatListEl.appendChild(frag);
+}
+
+function cleanText(t) {
+  if (!t) return '';
+  // ￼ marks an inline attachment, � a decode failure. Strip both, keep real text.
+  return t.replace(/[￼�]/g, '').trim();
+}
+
+function attachmentPlaceholderCount(t) {
+  if (!t) return 0;
+  const matches = t.match(/￼/g);
+  return matches ? matches.length : 0;
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Attachment filenames can contain '#', '?' or '%', which would otherwise be read as URL syntax.
+function assetUrl(p) {
+  return p.split('/').map(encodeURIComponent).join('/');
+}
+
+function renderAttachment(a) {
+  const el = document.createElement('div');
+  if (!a.available || !a.path) {
+    el.className = 'att-missing';
+    el.textContent = `${a.name} (unavailable, moved or offloaded before export)`;
+    return el;
+  }
+
+  if (a.kind === 'image') {
+    const link = document.createElement('a');
+    link.href = assetUrl(a.path);
+    link.target = '_blank';
+    const img = document.createElement('img');
+    img.className = 'att-img';
+    img.loading = 'lazy';
+    img.src = assetUrl(a.preview_path || a.path);
+    img.alt = a.name;
+    link.appendChild(img);
+    return link;
+  }
+  if (a.kind === 'video') {
+    const video = document.createElement('video');
+    video.className = 'att-video';
+    video.controls = true;
+    video.preload = 'metadata';
+    video.src = assetUrl(a.path);
+    return video;
+  }
+  if (a.kind === 'audio') {
+    const audio = document.createElement('audio');
+    audio.className = 'att-audio';
+    audio.controls = true;
+    audio.src = assetUrl(a.path);
+    return audio;
+  }
+  const chip = document.createElement('a');
+  chip.className = 'att-chip';
+  chip.href = assetUrl(a.path);
+  chip.target = '_blank';
+  const isPlugin = a.name.toLowerCase().endsWith('.pluginpayloadattachment');
+  chip.innerHTML = `📎 ${escapeHtml(isPlugin ? 'Shared content' : a.name)} <span class="att-size">${fmtSize(a.size)}</span>`;
+  return chip;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+function selectChat(chatId) {
+  selectedChatId = chatId;
+  document.querySelectorAll('.chat-item').forEach(el => {
+    el.classList.toggle('selected', Number(el.dataset.chatId) === chatId);
+  });
+  const chat = DATA.chats.find(c => c.chat_id === chatId);
+  renderThread(chat);
+}
+
+function renderThread(chat) {
+  const automated = isAutomated(chat);
+  threadEl.innerHTML = `
+    <div id="thread-header">
+      <div class="row1">
+        <div>
+          <div class="name">${automated ? '<span class="auto-badge">auto</span> ' : ''}${escapeHtml(chat.name || 'Unknown')}</div>
+          <div class="sub">${chat.messages.length} messages · ${escapeHtml(chat.identifier || '')}</div>
+        </div>
+        <button id="spam-btn" class="${automated ? 'is-spam' : ''}">${automated ? 'Not spam' : 'Mark as spam'}</button>
+      </div>
+    </div>
+    <div id="messages"></div>
+  `;
+  threadEl.querySelector('#spam-btn').addEventListener('click', () => {
+    spamOverrides[chat.chat_id] = !isAutomated(chat);
+    saveSpamOverrides(spamOverrides);
+    refreshAutomatedCount();
+    renderThread(chat);
+    renderChatList(searchEl.value);
+  });
+  const messagesEl = threadEl.querySelector('#messages');
+  const frag = document.createDocumentFragment();
+
+  let lastDay = null;
+  for (const m of chat.messages) {
+    const d = m.date ? new Date(m.date) : null;
+    const dayKey = d ? d.toDateString() : null;
+    if (dayKey && dayKey !== lastDay) {
+      const divider = document.createElement('div');
+      divider.className = 'day-divider';
+      divider.textContent = fmtDayDivider(m.date);
+      frag.appendChild(divider);
+      lastDay = dayKey;
+    }
+
+    const row = document.createElement('div');
+    row.className = 'msg-row ' + (m.from_me ? 'me' : 'them');
+
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble-wrap';
+
+    if (!m.from_me && chat.messages.some(x => !x.from_me && x.sender !== m.sender)) {
+      const label = document.createElement('div');
+      label.className = 'sender-label';
+      label.textContent = m.sender_name || m.sender || 'Unknown';
+      wrap.appendChild(label);
+    }
+
+    const hasAttachments = m.attachments && m.attachments.length > 0;
+    if (hasAttachments) {
+      for (const a of m.attachments) {
+        wrap.appendChild(renderAttachment(a));
+      }
+    }
+
+    const cleaned = cleanText(m.text);
+    const hasText = cleaned.length > 0;
+    if (hasText) {
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = cleaned;
+      wrap.appendChild(bubble);
+    } else if (!hasAttachments) {
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble empty';
+      bubble.textContent = '[no text, reaction or unreadable message]';
+      wrap.appendChild(bubble);
+    }
+    row.appendChild(wrap);
+    frag.appendChild(row);
+  }
+  messagesEl.appendChild(frag);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+searchEl.addEventListener('input', () => renderChatList(searchEl.value));
+hideAutomatedEl.addEventListener('change', () => renderChatList(searchEl.value));
+
+renderChatList('');
+</script>
+</body>
+</html>
