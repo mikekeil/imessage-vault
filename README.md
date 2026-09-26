@@ -2,7 +2,13 @@
 
 Export your macOS Messages history (iMessage + SMS) into a self-contained,
 searchable, offline viewer that runs in any browser. Everything stays on
-your machine; no data is uploaded anywhere.
+your machine; the tools make no network calls and upload nothing (a backup
+copy only leaves your machine if you point `--mirror-dir` at a synced folder).
+
+**Read this first:** this tool reads your entire Messages database, which
+holds every message and attachment you have. It opens `chat.db` read-only and
+never modifies or sends anything, but it needs Full Disk Access to do so, and
+the output it creates is sensitive. See [Privacy](#privacy).
 
 Not affiliated with or endorsed by Apple. "iMessage" is a trademark of
 Apple Inc.
@@ -127,14 +133,16 @@ daily incremental export, and a monthly archive run.
 
 ```bash
 ./install-schedule.sh --export-flags "--max-image-dim 2000" \
-    --mirror-dir "$HOME/Library/CloudStorage/GoogleDrive-<you>/My Drive/iMessage-Backups"
+    --mirror-dir "/path/to/any/synced/or/backup/folder"
 ```
 
 - `--export-flags`: the same flags you made your export with. Incremental
   runs don't remember them, so a mismatch (e.g. leaving out
   `--max-image-dim`) copies full-size originals from then on.
 - `--archive-dir`: where archives go (default `~/iMessage-Export-Archives`).
-- `--mirror-dir`: optional second copy, e.g. a synced cloud folder.
+- `--mirror-dir`: optional second copy in any folder you choose (an external
+  drive, or a Google Drive / iCloud Drive / Dropbox folder). Leave it out to
+  keep everything local.
 - `--keep-full N`: full archives to keep (default 2); see below.
 - `--uninstall`: remove both jobs.
 
