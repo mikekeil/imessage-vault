@@ -251,6 +251,36 @@
     margin-bottom: 3px;
     max-width: fit-content;
   }
+  .reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin: -2px 6px 4px;
+  }
+  .msg-row.me .reactions { justify-content: flex-end; }
+  .reaction-pill {
+    font-size: 12px;
+    line-height: 1;
+    padding: 3px 6px;
+    border-radius: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: default;
+  }
+  .reply-quote {
+    font-size: 12px;
+    color: var(--text-secondary);
+    border-left: 2px solid var(--border);
+    padding: 2px 8px;
+    margin: 4px 4px 3px;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .reply-quote:hover { color: var(--text); }
+  .msg-row.flash .bubble { outline: 2px solid var(--accent); }
   .msg-time {
     font-size: 10px;
     color: var(--text-secondary);
@@ -466,6 +496,69 @@ function escapeHtml(s) {
   }[ch]));
 }
 
+const REACTION_EMOJI = {
+  love: '❤️', like: '👍', dislike: '👎', laugh: '😂',
+  emphasize: '‼️', question: '❓', sticker: '🖼️', other: '•',
+};
+
+function displaySender(m) {
+  return m.from_me ? 'You' : (m.sender_name || m.sender || 'Unknown');
+}
+
+// Reactions are stored as their own messages pointing at a target GUID. Fold
+// them onto their targets, replaying adds and removals in order, and hide the
+// reaction rows themselves. A reaction whose target isn't in this chat (e.g.
+// the target was deleted) is left as a normal row so nothing disappears.
+function collectReactions(chat, byGuid) {
+  const onTarget = new Map();
+  const hidden = new Set();
+  for (const m of chat.messages) {
+    const r = m.reaction;
+    if (!r || !byGuid.has(r.target)) continue;
+    hidden.add(m);
+    if (!onTarget.has(r.target)) onTarget.set(r.target, new Map());
+    const perTarget = onTarget.get(r.target);
+    const key = `${m.from_me ? 'me' : m.sender}|${r.type}|${r.emoji || ''}`;
+    if (r.removed) perTarget.delete(key);
+    else perTarget.set(key, { emoji: r.emoji || REACTION_EMOJI[r.type] || '•', who: displaySender(m) });
+  }
+  return { onTarget, hidden };
+}
+
+function renderReactions(reactions) {
+  const groups = new Map();
+  for (const { emoji, who } of reactions.values()) {
+    if (!groups.has(emoji)) groups.set(emoji, []);
+    groups.get(emoji).push(who);
+  }
+  const el = document.createElement('div');
+  el.className = 'reactions';
+  for (const [emoji, people] of groups) {
+    const pill = document.createElement('span');
+    pill.className = 'reaction-pill';
+    pill.textContent = people.length > 1 ? `${emoji} ${people.length}` : emoji;
+    pill.title = people.join(', ');
+    el.appendChild(pill);
+  }
+  return el;
+}
+
+function renderReplyQuote(original, messagesEl) {
+  const el = document.createElement('div');
+  el.className = 'reply-quote';
+  const text = cleanText(original.text) || (original.attachments && original.attachments.length ? '📎 Attachment' : '…');
+  el.textContent = `↪ ${displaySender(original)}: ${text}`;
+  el.title = 'Jump to original message';
+  el.addEventListener('click', () => {
+    const target = messagesEl.querySelector(`[data-guid="${CSS.escape(original.guid)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: 'center' });
+    target.classList.add('flash');
+    setTimeout(() => target.classList.remove('flash'), 1200);
+  });
+  return el;
+}
+
 function selectChat(chatId) {
   selectedChatId = chatId;
   document.querySelectorAll('.chat-item').forEach(el => {
@@ -498,9 +591,12 @@ function renderThread(chat) {
   });
   const messagesEl = threadEl.querySelector('#messages');
   const frag = document.createDocumentFragment();
+  const byGuid = new Map(chat.messages.filter(m => m.guid).map(m => [m.guid, m]));
+  const { onTarget, hidden } = collectReactions(chat, byGuid);
 
   let lastDay = null;
   for (const m of chat.messages) {
+    if (hidden.has(m)) continue;
     const d = m.date ? new Date(m.date) : null;
     const dayKey = d ? d.toDateString() : null;
     if (dayKey && dayKey !== lastDay) {
@@ -513,6 +609,7 @@ function renderThread(chat) {
 
     const row = document.createElement('div');
     row.className = 'msg-row ' + (m.from_me ? 'me' : 'them');
+    if (m.guid) row.dataset.guid = m.guid;
 
     const wrap = document.createElement('div');
     wrap.className = 'bubble-wrap';
@@ -523,6 +620,9 @@ function renderThread(chat) {
       label.textContent = m.sender_name || m.sender || 'Unknown';
       wrap.appendChild(label);
     }
+
+    const original = m.reply_to && byGuid.get(m.reply_to);
+    if (original) wrap.appendChild(renderReplyQuote(original, messagesEl));
 
     const hasAttachments = m.attachments && m.attachments.length > 0;
     if (hasAttachments) {
@@ -544,6 +644,8 @@ function renderThread(chat) {
       bubble.textContent = '[no text, reaction or unreadable message]';
       wrap.appendChild(bubble);
     }
+    const reactions = m.guid && onTarget.get(m.guid);
+    if (reactions && reactions.size) wrap.appendChild(renderReactions(reactions));
     row.appendChild(wrap);
     frag.appendChild(row);
   }

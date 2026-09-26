@@ -22,6 +22,10 @@ Apple Inc.
   into the same output folder (GIFs are skipped) and render inline. HEIC
   photos, which no browser can display natively, additionally get a small
   JPEG preview generated automatically via macOS's built-in `sips`.
+- **Shows reactions and replies.** Tapbacks (love, like, laugh, custom emoji,
+  and so on) appear as badges on the message they react to, and inline replies
+  show a quote of the message they answer, instead of separate
+  `Loved "..."` lines.
 - **Flags likely spam/marketing/OTP conversations** (bank alerts, verification
   codes, shipping notifications) so you can filter them out, with a manual
   override per conversation if the heuristic gets one wrong.
@@ -116,6 +120,70 @@ python3 extract_imessages.py
                        --output-dir)
 ```
 
+## Scheduled backups and archives
+
+For an ongoing backup, `install-schedule.sh` sets up two launchd jobs: a
+daily incremental export, and a monthly archive run.
+
+```bash
+./install-schedule.sh --export-flags "--max-image-dim 2000" \
+    --mirror-dir "$HOME/Library/CloudStorage/GoogleDrive-<you>/My Drive/iMessage-Backups"
+```
+
+- `--export-flags`: the same flags you made your export with. Incremental
+  runs don't remember them, so a mismatch (e.g. leaving out
+  `--max-image-dim`) copies full-size originals from then on.
+- `--archive-dir`: where archives go (default `~/iMessage-Export-Archives`).
+- `--mirror-dir`: optional second copy, e.g. a synced cloud folder.
+- `--keep-full N`: full archives to keep (default 2); see below.
+- `--uninstall`: remove both jobs.
+
+The jobs run `/bin/zsh`, so it needs Full Disk Access (System Settings >
+Privacy & Security > Full Disk Access > + > Cmd-Shift-G > `/bin/zsh`). Logs
+go to `~/Library/Logs/imessage-vault/`, and a failed run posts a macOS
+notification.
+
+**"Couldn't read chat.db" in the scheduled log?** Full Disk Access is granted
+per process, and a launchd job doesn't inherit Terminal's. Add `/bin/zsh` as
+above; if it still fails, also add the real `python3` the script uses (run
+`which python3`; pick the binary, not a symlink). Then re-run with
+`launchctl kickstart -k gui/$(id -u)/local.imessage-vault.daily` and check
+`~/Library/Logs/imessage-vault/daily.log`. Granting `/bin/zsh` lets any zsh
+script read your Messages; to avoid that, grant only `python3` and point the
+plist at it directly.
+
+### How the archives stay small but redundant
+
+`backup_archive.py` writes two kinds of zip, each with a manifest:
+
+| Archive | When | Contains |
+| --- | --- | --- |
+| Full | Once a year (January), or the first run ever | All message text, every attachment, a `chat.db` snapshot |
+| Monthly | Every other month | All message text, plus only the attachments of messages added since the last archive |
+
+All message text is only a few MB compressed, so every archive carries all
+of it: **any single archive restores every message up to its date.** Losing
+a monthly archive loses only that month's photos, never text. Once more than
+`--keep-full` full archives exist, older archives are deleted, since
+everything in them is also in a newer full archive.
+
+Rebuild a normal, viewable export from whatever archives you have:
+
+```bash
+python3 backup_archive.py restore ~/iMessage-Export-Archives/*.zip -o ~/iMessage-Restored
+python3 backup_archive.py restore ... --verify-only   # report only, write nothing
+```
+
+Restore merges the text from every archive (so messages you later deleted
+from Messages are still kept), collects attachments from all of them, and
+reports any ID ranges or attachment files it couldn't recover. It also
+accepts zips made by the panel's "Create Archive Backup" button.
+
+The `chat.db` snapshot in each full archive is there because the export
+can't capture everything: edit history, read receipts, and message effects
+live only in the database, and it lets you re-export with a fixed decoder
+later (`extract_imessages.py --db chat-backup.db`).
+
 ## Using it as a Claude Code Skill
 
 This repo also ships a [Claude Code](https://claude.com/claude-code) skill
@@ -133,7 +201,9 @@ Access if needed.
   sensitive personal data it is. `.gitignore` in this repo blocks it from
   ever being committed, but that only protects *this* repo, not wherever you
   choose to back up the export folder itself. The same goes for archive
-  zips, which also include a full copy of `chat.db`.
+  zips, which hold your message text (and, for full archives, a copy of
+  `chat.db`). If you use `--mirror-dir` with a cloud folder, that copy is
+  stored by that provider.
 - The spam/automated flag and any manual overrides you set in the viewer are
   stored in your browser's local storage, scoped to the file, not synced or
   uploaded anywhere.

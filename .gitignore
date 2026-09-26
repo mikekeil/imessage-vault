@@ -9,3 +9,9 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Archives and their chain state hold message data too
+*.zip
+*.zip.partial
+.archive-state.json
+chat-backup.db

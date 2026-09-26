@@ -301,6 +301,51 @@ def downscale_image(src: Path, dest: Path, max_dim: int, to_jpeg: bool) -> bool:
     return dest.exists()
 
 
+# associated_message_type values for tapbacks. 3000-3007 remove the matching
+# 2000-2007 reaction. 2006 is a custom emoji reaction (associated_message_emoji).
+REACTION_TYPES = {
+    2000: "love", 2001: "like", 2002: "dislike", 2003: "laugh",
+    2004: "emphasize", 2005: "question", 2006: "emoji", 2007: "sticker",
+}
+
+
+def parse_message_ref(raw):
+    """associated_message_guid looks like 'p:0/<GUID>' (part 0 of a message) or
+    'bp:<GUID>'; return (guid, part) or (None, None)."""
+    if not raw:
+        return None, None
+    m = re.match(r"^(?:p:(\d+)/|bp:)?(.+)$", raw)
+    return m.group(2), (int(m.group(1)) if m.group(1) else 0)
+
+
+def reaction_for(row):
+    kind = row["associated_message_type"] or 0
+    if not (2000 <= kind <= 2999 or 3000 <= kind <= 3999):
+        return None
+    removed = kind >= 3000
+    target, part = parse_message_ref(row["associated_message_guid"])
+    if not target:
+        return None
+    reaction = {
+        "type": REACTION_TYPES.get(kind - 1000 if removed else kind, "other"),
+        "target": target,
+    }
+    if part:
+        reaction["part"] = part
+    if row["associated_message_emoji"]:
+        reaction["emoji"] = row["associated_message_emoji"]
+    if removed:
+        reaction["removed"] = True
+    return reaction
+
+
+def optional_column(conn, table, column):
+    """Select a column only if this macOS version's schema has it (older chat.db
+    files lack e.g. associated_message_emoji), else NULL, so the query never breaks."""
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    return f"{table}.{column}" if column in cols else "NULL"
+
+
 def load_attachments_by_message(conn, attachments_dir: Path, skip_previews: bool, min_message_id: int,
                                  skip_videos: bool = False, max_image_dim: int = None):
     rows = conn.execute(
@@ -339,9 +384,15 @@ def load_attachments_by_message(conn, attachments_dir: Path, skip_previews: bool
             skipped_video += 1
             continue
 
-        available = bool(src and src.exists())
         kind = classify_attachment(ext)
         safe_name = f"{row['attachment_id']}_{src.name}" if src else f"{row['attachment_id']}_attachment"
+        # A file copied by an earlier export still counts even if the original has
+        # since been evicted (e.g. iCloud "Optimize Mac Storage"), so a rebuild
+        # doesn't lose attachments that now only exist in the export.
+        resized_heic = attachments_dir / f"{row['attachment_id']}_{src.stem}.jpg" if src else None
+        already_exported = (attachments_dir / safe_name).exists() or bool(
+            max_image_dim and resized_heic and resized_heic.exists())
+        available = bool(src and src.exists()) or already_exported
 
         entry = {
             "name": row["transfer_name"] or (src.name if src else "attachment"),
@@ -364,7 +415,7 @@ def load_attachments_by_message(conn, attachments_dir: Path, skip_previews: bool
             candidate = attachments_dir / (f"{row['attachment_id']}_{src.stem}.jpg" if is_heic else safe_name)
             if candidate.exists():
                 resized_dest = candidate
-            elif downscale_image(src, candidate, max_image_dim, is_heic):
+            elif src.exists() and downscale_image(src, candidate, max_image_dim, is_heic):
                 resized_dest = candidate
                 resized += 1
 
@@ -384,7 +435,7 @@ def load_attachments_by_message(conn, attachments_dir: Path, skip_previews: bool
 
             if entry["path"] and not skip_previews and ext in NEEDS_PREVIEW_EXTS:
                 preview_dest = attachments_dir / f"{row['attachment_id']}_preview.jpg"
-                if not preview_dest.exists():
+                if not preview_dest.exists() and src.exists():
                     try:
                         subprocess.run(
                             ["sips", "-s", "format", "jpeg", "-Z", "1200", str(src), "--out", str(preview_dest)],
@@ -433,6 +484,8 @@ def open_db(db_path: Path):
             "Grant Full Disk Access to your terminal app:\n"
             "  System Settings > Privacy & Security > Full Disk Access\n"
             "  add Terminal (or iTerm/whatever you're running this from), then re-run.\n"
+            "Running from a scheduled (launchd) job? Terminal's access doesn't apply;\n"
+            "  add /bin/zsh (and the python3 binary if it still fails), then restart the job.\n"
             f"Underlying error: {e}"
         )
 
@@ -480,14 +533,23 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
             chat.ROWID AS chat_id,
             chat.guid AS chat_guid,
             chat.display_name AS chat_display_name,
-            chat.chat_identifier AS chat_identifier
+            chat.chat_identifier AS chat_identifier,
+            {assoc_guid} AS associated_message_guid,
+            {assoc_type} AS associated_message_type,
+            {assoc_emoji} AS associated_message_emoji,
+            {thread_guid} AS thread_originator_guid
         FROM message
         LEFT JOIN handle ON message.handle_id = handle.ROWID
         LEFT JOIN chat_message_join ON message.ROWID = chat_message_join.message_id
         LEFT JOIN chat ON chat_message_join.chat_id = chat.ROWID
         WHERE message.ROWID > ?
         ORDER BY chat.ROWID, message.date ASC
-        """,
+        """.format(
+            assoc_guid=optional_column(conn, "message", "associated_message_guid"),
+            assoc_type=optional_column(conn, "message", "associated_message_type"),
+            assoc_emoji=optional_column(conn, "message", "associated_message_emoji"),
+            thread_guid=optional_column(conn, "message", "thread_originator_guid"),
+        ),
         (min_message_id,),
     ).fetchall()
 
@@ -537,7 +599,7 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
             text = extract_text_from_attributed_body(row["attributed_body"])
 
         sender_identifier = None if row["is_from_me"] else row["sender"]
-        chats[chat_id]["messages"].append({
+        message = {
             "id": row["message_id"],
             "guid": row["message_guid"],
             "date": apple_time_to_iso(row["date"]),
@@ -546,7 +608,17 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
             "sender_name": None if row["is_from_me"] else (name_for(sender_identifier) or sender_identifier),
             "text": text,
             "attachments": attachments_by_message.get(row["message_id"], []),
-        })
+        }
+        # Only present when set, to keep the export small. Reactions stay their own
+        # rows (text like 'Loved "..."' still works in older viewers) and point at
+        # their target by GUID, so an export never has to rewrite older messages.
+        reaction = reaction_for(row)
+        if reaction:
+            message["reaction"] = reaction
+        reply_to, _ = parse_message_ref(row["thread_originator_guid"])
+        if reply_to:
+            message["reply_to"] = reply_to
+        chats[chat_id]["messages"].append(message)
 
     conn.close()
     return chats, max_message_id, name_for
@@ -656,6 +728,8 @@ def backup_database(db_path: Path, dest_path: Path) -> None:
             "Grant Full Disk Access to your terminal app:\n"
             "  System Settings > Privacy & Security > Full Disk Access\n"
             "  add Terminal (or iTerm/whatever you're running this from), then re-run.\n"
+            "Running from a scheduled (launchd) job? Terminal's access doesn't apply;\n"
+            "  add /bin/zsh (and the python3 binary if it still fails), then restart the job.\n"
             f"Underlying error: {e}"
         )
     finally:

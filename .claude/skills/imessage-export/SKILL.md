@@ -125,3 +125,17 @@ they won't remember.
 - **A conversation is wrongly flagged (or not flagged) as automated**: this
   is a heuristic, not a bug. Point the user at the manual override in the
   viewer rather than trying to tune the regex for one conversation.
+
+## Scheduled backups, archives, and restoring
+
+If the user wants recurring backups, point them at `install-schedule.sh`
+(daily export + monthly archive via launchd; see the README). Pass
+`--export-flags` matching the flags their existing export was made with,
+or incremental runs will switch to full-size originals. The jobs need Full
+Disk Access for `/bin/zsh`.
+
+To rebuild messages from archives, run
+`python3 backup_archive.py restore <zips...> -o <new folder>` (add
+`--verify-only` to just check what's recoverable). Any single archive
+restores all message text up to its date; attachments come from whichever
+archives are present.
