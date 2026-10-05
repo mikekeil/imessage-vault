@@ -35,6 +35,15 @@ Apple Inc.
 - **Flags likely spam/marketing/OTP conversations** (bank alerts, verification
   codes, shipping notifications) so you can filter them out, with a manual
   override per conversation if the heuristic gets one wrong.
+- **Shows message times and status.** Each message shows when it was sent
+  or received, plus "Edited", "Delivered", and "Read" times when Messages
+  recorded them. Hover a time for the full dates. Read times for messages
+  you sent only exist if the other person shares read receipts. Unsent
+  messages show as "unsent a message" instead of an empty bubble.
+- **Filters Screen Time requests** ("X asked for more time for ...") and Ask
+  to Buy requests ("X asked to get the app ...") out of conversations by
+  default, with a dropdown to show them, or to show only
+  them. Pass `--skip-screen-time` to leave them out of the export entirely.
 - **Runs incrementally by default.** Re-running the script finds the newest
   message already in your export and only pulls what's changed since, so you
   can keep it as a recurring backup without redoing a full pull every time.
@@ -53,7 +62,8 @@ Apple Inc.
 - **Full Disk Access** for whatever terminal app you run this from:
   System Settings > Privacy & Security > Full Disk Access > add Terminal
   (or iTerm, etc.) and restart it. Without this, the script can't read
-  Messages' database at all.
+  Messages' database at all. Scheduled backups need separate grants; see
+  [Full Disk Access for scheduled jobs](#full-disk-access-for-scheduled-jobs).
 
 ## Usage
 
@@ -113,6 +123,10 @@ python3 extract_imessages.py
                        inline; you can still open the original file)
 --skip-videos         Leave out video attachments (.mov/.mp4/etc.), usually
                        the biggest contributor to export size
+--skip-screen-time    Leave out Screen Time and Ask to Buy requests ("X
+                       asked for more time for ...", "X asked to get the
+                       app ..."), and remove any already in the export
+                       that are still in chat.db
 --max-image-dim [PX]  Downscale photos so the longest side is at most PX
                        pixels (default 2000 if you pass the flag with no
                        value) instead of copying full-resolution originals.
@@ -146,19 +160,75 @@ daily incremental export, and a monthly archive run.
 - `--keep-full N`: full archives to keep (default 2); see below.
 - `--uninstall`: remove both jobs.
 
-The jobs run `/bin/zsh`, so it needs Full Disk Access (System Settings >
-Privacy & Security > Full Disk Access > + > Cmd-Shift-G > `/bin/zsh`). Logs
-go to `~/Library/Logs/imessage-vault/`, and a failed run posts a macOS
-notification.
+Logs go to `~/Library/Logs/imessage-vault/`, and a failed run posts a macOS
+notification. The jobs need their own Full Disk Access; see the next section
+before relying on them.
 
-**"Couldn't read chat.db" in the scheduled log?** Full Disk Access is granted
-per process, and a launchd job doesn't inherit Terminal's. Add `/bin/zsh` as
-above; if it still fails, also add the real `python3` the script uses (run
-`which python3`; pick the binary, not a symlink). Then re-run with
-`launchctl kickstart -k gui/$(id -u)/local.imessage-vault.daily` and check
-`~/Library/Logs/imessage-vault/daily.log`. Granting `/bin/zsh` lets any zsh
-script read your Messages; to avoid that, grant only `python3` and point the
-plist at it directly.
+### Full Disk Access for scheduled jobs
+
+A launchd job does **not** inherit Terminal's Full Disk Access. An export that
+works from Terminal can still fail every night with this in
+`~/Library/Logs/imessage-vault/daily.log`:
+
+```
+Couldn't read chat.db (likely a permissions issue).
+Underlying error: unable to open database file
+```
+
+The job runs `/bin/zsh`, which runs `python3`, and macOS may check either
+one. Grant all of these:
+
+| Grant | How to find it |
+| --- | --- |
+| `/bin/zsh` | Always this path |
+| The real `python3` binary, not the symlink | `realpath "$(which python3)"` (Homebrew example: `/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/bin/python3.14`) |
+| `Python.app`, for Homebrew/python.org framework builds | The same `Python.framework/Versions/3.x/` folder, under `Resources/Python.app` |
+
+On a Homebrew Python, granting only `/bin/zsh` and `Python.app` was not
+enough; the job started working once the `bin/python3.x` binary was enabled
+too.
+
+**To add each one:** System Settings > Privacy & Security > Full Disk Access >
+**+**, press **Cmd-Shift-G**, paste the path, and click Open. **Then check that
+its toggle is on.** An entry can be added in the off state, and an entry
+that's in the list but switched off looks set up but does nothing.
+
+**Check what's granted** from a terminal that already has Full Disk Access
+(read-only; `auth_value` 2 means on, 0 means off):
+
+```bash
+sqlite3 "file:/Library/Application Support/com.apple.TCC/TCC.db?mode=ro" \
+  "select client, auth_value from access where service='kTCCServiceSystemPolicyAllFiles';"
+```
+
+**Test it:** start the job now instead of waiting for its schedule, then read
+the log once it finishes. `-k` stops a run that's already going, so run this
+once and then wait:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/local.imessage-vault.daily
+sleep 15; tail -8 ~/Library/Logs/imessage-vault/daily.log
+```
+
+A working run prints `Pulled N new messages; ...` followed by `=== done`.
+Check the timestamp on the last `=== ... daily backup` line: if you read the
+log too soon, you're looking at the previous run.
+
+**After a Python upgrade** (`brew upgrade`), the versioned path changes and
+the grant no longer applies. If the job starts failing after an upgrade,
+grant the new path and test again.
+
+Granting `/bin/zsh` lets any zsh script read your Messages. To narrow that,
+grant only the Python entries and change the plist's `ProgramArguments` to
+call `python3` directly.
+
+**For AI agents setting this up:** an agent can't grant Full Disk Access; a
+person has to click through System Settings. Find the exact paths, give them
+to the person, and use the read-only `TCC.db` query above to confirm the
+toggles are on, instead of assuming a grant worked. A sandboxed agent may
+also be able to read `chat.db` but not write to `~/iMessage-Export`. If an
+export fails with `PermissionError` on `messages.json`, that's the agent's
+sandbox, not Full Disk Access; have the person run the command.
 
 ### How the archives stay small but redundant
 

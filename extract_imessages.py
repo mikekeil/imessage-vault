@@ -19,6 +19,7 @@ display HEIC natively.
 import argparse
 import glob
 import json
+import plistlib
 import re
 import shutil
 import sqlite3
@@ -339,6 +340,124 @@ def reaction_for(row):
     return reaction
 
 
+# Family parental-control requests, grouped together as "Screen Time":
+# "X asked for more time for ..." and Ask to Buy's "X asked to get the app ...".
+SCREEN_TIME_BALLOON_SUFFIXES = (
+    "com.apple.PeopleMessageService.ScreenTime",
+    "com.apple.PeopleMessageService.AskToBuy",
+)
+
+
+def is_screen_time(balloon_bundle_id):
+    """Screen Time and Ask to Buy requests are Messages app extension
+    bubbles, identified only by their balloon bundle id."""
+    return bool(balloon_bundle_id) and balloon_bundle_id.endswith(SCREEN_TIME_BALLOON_SUFFIXES)
+
+
+def is_unsent(summary_info, text):
+    """An unsent message keeps its row but loses its text; its summary info
+    gets an 'rp' (retracted parts) list. Only flag it when no text survived,
+    since a multi-part message can have just some parts unsent."""
+    if text or not summary_info:
+        return False
+    try:
+        return bool(plistlib.loads(summary_info).get("rp"))
+    except Exception:
+        return False
+
+
+def apple_seconds(raw):
+    """Apple timestamp (nanoseconds, or seconds on older macOS) as seconds."""
+    return raw / 1e9 if raw > 1e13 else raw
+
+
+def event_time(raw, message_raw):
+    """ISO time for a per-message event (read, delivered, edited), or None.
+    chat.db leaves unset events as 0 and sometimes stores near-zero
+    placeholders, so ignore anything earlier than the message itself."""
+    if not raw or not message_raw:
+        return None
+    if apple_seconds(raw) < apple_seconds(message_raw) - 60:
+        return None
+    return apple_time_to_iso(raw)
+
+
+EXTRA_COLUMNS = ("balloon_bundle_id", "message_summary_info", "date_read", "date_delivered", "date_edited")
+
+
+def message_extras(row, text):
+    """Optional per-message fields, only the ones that apply, to keep the
+    export small: screen_time, unsent, and date_read / date_delivered /
+    date_edited. row needs date plus EXTRA_COLUMNS; text is the decoded text."""
+    extras = {}
+    if is_screen_time(row["balloon_bundle_id"]):
+        extras["screen_time"] = True
+    unsent = is_unsent(row["message_summary_info"], text)
+    if unsent:
+        extras["unsent"] = True
+    for field in ("date_read", "date_delivered", "date_edited"):
+        if field == "date_edited" and unsent:
+            continue  # unsending also sets date_edited; it isn't an edit
+        when = event_time(row[field], row["date"])
+        if when:
+            extras[field] = when
+    return extras
+
+
+def extra_columns_sql(conn):
+    return ",\n".join(
+        f"            {optional_column(conn, 'message', col)} AS {col}" for col in EXTRA_COLUMNS
+    )
+
+
+def db_message_extras(db_path: Path):
+    """{guid: extras} for every message in chat.db that has any, used to fill
+    in messages already in an existing export. Messages deleted from chat.db
+    (e.g. by Keep Messages expiring them) can't be updated this way."""
+    conn = open_db(db_path)
+    conn.row_factory = sqlite3.Row
+    extras_by_guid = {}
+    for row in conn.execute(
+        f"SELECT guid, date, text, attributedBody,\n{extra_columns_sql(conn)}\nFROM message"
+    ):
+        text = row["text"]
+        if row["message_summary_info"] and not (text or "").strip():
+            text = extract_text_from_attributed_body(row["attributedBody"])
+        extras = message_extras(row, text)
+        if extras:
+            extras_by_guid[row["guid"]] = extras
+    conn.close()
+    return extras_by_guid
+
+
+def remove_messages_by_guid(chats, guids):
+    """Drop messages whose GUID is in guids, and any chat left with no messages.
+    Returns how many messages were removed."""
+    removed = 0
+    for chat_id in list(chats):
+        msgs = chats[chat_id]["messages"]
+        kept = [m for m in msgs if m["guid"] not in guids]
+        removed += len(msgs) - len(kept)
+        if not kept:
+            del chats[chat_id]
+        else:
+            chats[chat_id]["messages"] = kept
+    return removed
+
+
+def apply_extras(chats, extras_by_guid):
+    """Add extras to existing messages that don't have them yet, for exports
+    made before these fields existed. Returns {field: messages updated}."""
+    updated = {}
+    for chat in chats.values():
+        for m in chat["messages"]:
+            for field, value in extras_by_guid.get(m["guid"], {}).items():
+                if m.get(field) != value:
+                    m[field] = value
+                    updated[field] = updated.get(field, 0) + 1
+    return updated
+
+
 def optional_column(conn, table, column):
     """Select a column only if this macOS version's schema has it (older chat.db
     files lack e.g. associated_message_emoji), else NULL, so the query never breaks."""
@@ -492,7 +611,7 @@ def open_db(db_path: Path):
 
 def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_attachments: bool,
                     skip_previews: bool, min_message_id: int, skip_videos: bool = False,
-                    max_image_dim: int = None):
+                    max_image_dim: int = None, skip_screen_time: bool = False):
     """Pull every message with ROWID > min_message_id (0 for a full pull),
     grouped by chat. Does not compute derived per-chat fields (is_automated,
     _last_date, etc.) -- call finalize_chats() after merging with any
@@ -537,7 +656,8 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
             {assoc_guid} AS associated_message_guid,
             {assoc_type} AS associated_message_type,
             {assoc_emoji} AS associated_message_emoji,
-            {thread_guid} AS thread_originator_guid
+            {thread_guid} AS thread_originator_guid,
+{extras}
         FROM message
         LEFT JOIN handle ON message.handle_id = handle.ROWID
         LEFT JOIN chat_message_join ON message.ROWID = chat_message_join.message_id
@@ -549,6 +669,7 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
             assoc_type=optional_column(conn, "message", "associated_message_type"),
             assoc_emoji=optional_column(conn, "message", "associated_message_emoji"),
             thread_guid=optional_column(conn, "message", "thread_originator_guid"),
+            extras=extra_columns_sql(conn),
         ),
         (min_message_id,),
     ).fetchall()
@@ -567,6 +688,8 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
         max_message_id = max(max_message_id, row["message_id"])
         if chat_id is None:
             continue  # message not linked to any chat (rare, skip)
+        if skip_screen_time and is_screen_time(row["balloon_bundle_id"]):
+            continue
 
         if chat_id not in chats:
             identifier = row["chat_identifier"]
@@ -618,6 +741,7 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
         reply_to, _ = parse_message_ref(row["thread_originator_guid"])
         if reply_to:
             message["reply_to"] = reply_to
+        message.update(message_extras(row, text))
         chats[chat_id]["messages"].append(message)
 
     conn.close()
@@ -653,7 +777,8 @@ def finalize_chats(chats, name_for):
 
 
 def export(db_path: Path, output_dir: Path, skip_contacts: bool, skip_attachments: bool,
-           skip_previews: bool, full_rebuild: bool, skip_videos: bool = False, max_image_dim: int = None):
+           skip_previews: bool, full_rebuild: bool, skip_videos: bool = False, max_image_dim: int = None,
+           skip_screen_time: bool = False):
     output_dir.mkdir(parents=True, exist_ok=True)
     existing_path = output_dir / "messages.json"
 
@@ -672,11 +797,19 @@ def export(db_path: Path, output_dir: Path, skip_contacts: bool, skip_attachment
 
     new_chats, max_message_id, name_for = pull_new_chats(
         db_path, output_dir, skip_contacts, skip_attachments, skip_previews, min_message_id,
-        skip_videos, max_image_dim
+        skip_videos, max_image_dim, skip_screen_time
     )
 
     if existing:
         existing_chats = {c["chat_id"]: c for c in existing["chats"]}
+        extras_by_guid = db_message_extras(db_path)
+        if skip_screen_time:
+            screen_time = {guid for guid, extras in extras_by_guid.items() if extras.get("screen_time")}
+            removed = remove_messages_by_guid(existing_chats, screen_time)
+            if removed:
+                print(f"Removed {removed} Screen Time requests already in the export", file=sys.stderr, flush=True)
+        for field, count in sorted(apply_extras(existing_chats, extras_by_guid).items()):
+            print(f"Updated {field} on {count} existing messages", file=sys.stderr, flush=True)
         all_chats = merge_chats(existing_chats, new_chats)
     else:
         all_chats = new_chats
@@ -795,6 +928,12 @@ def main():
              "single largest contributor to export size",
     )
     parser.add_argument(
+        "--skip-screen-time", action="store_true",
+        help="Leave out Screen Time and Ask to Buy requests (\"X asked for more time for ...\", "
+             "\"X asked to get the app ...\"), and remove "
+             "any already in the export that are still in chat.db",
+    )
+    parser.add_argument(
         "--max-image-dim", type=int, nargs="?", const=2000, default=None, metavar="PIXELS",
         help="Downscale photos to at most this many pixels on the longest side, "
              "recompressing as needed instead of copying full-resolution originals. "
@@ -821,7 +960,8 @@ def main():
         return
 
     export(args.db, args.output_dir, args.skip_contacts, args.skip_attachments,
-           args.skip_previews, args.full_rebuild, args.skip_videos, args.max_image_dim)
+           args.skip_previews, args.full_rebuild, args.skip_videos, args.max_image_dim,
+           args.skip_screen_time)
 
 
 if __name__ == "__main__":

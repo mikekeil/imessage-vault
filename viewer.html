@@ -88,6 +88,18 @@
     cursor: pointer;
   }
   #spam-toggle input { cursor: pointer; }
+  #screen-time-filter {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 6px;
+    cursor: pointer;
+  }
   #chat-list {
     overflow-y: auto;
     flex: 1;
@@ -183,6 +195,12 @@
   .msg-row.me { justify-content: flex-end; }
   .msg-row.them { justify-content: flex-start; }
   .bubble-wrap { max-width: 68%; }
+  .msg-time {
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    margin: 2px 6px 0;
+  }
+  .msg-row.me .msg-time { text-align: right; }
   .sender-label {
     font-size: 11px;
     color: var(--text-secondary);
@@ -206,6 +224,12 @@
     color: var(--bubble-them-text);
     border-bottom-left-radius: 4px;
   }
+  .unsent-note {
+    font-size: 12px;
+    font-style: italic;
+    color: var(--text-secondary);
+    padding: 2px 4px;
+  }
   .bubble.empty {
     font-style: italic;
     opacity: 0.7;
@@ -218,6 +242,51 @@
     margin-bottom: 3px;
     cursor: pointer;
     object-fit: cover;
+  }
+  #lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 48px 64px 20px;
+    background: rgba(0, 0, 0, 0.88);
+  }
+  #lightbox.open { display: flex; }
+  #lightbox img {
+    max-width: 100%;
+    max-height: calc(100vh - 110px);
+    object-fit: contain;
+    border-radius: 6px;
+  }
+  #lightbox .lb-caption {
+    color: #e5e5ea;
+    font-size: 12.5px;
+    text-align: center;
+  }
+  #lightbox .lb-caption a { color: #8ab4ff; margin-left: 10px; }
+  #lightbox button {
+    position: absolute;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    border: none;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    font-size: 20px;
+    line-height: 40px;
+    cursor: pointer;
+  }
+  #lightbox button:hover { background: rgba(255, 255, 255, 0.25); }
+  #lightbox .lb-close { top: 12px; right: 14px; }
+  #lightbox .lb-prev { left: 12px; top: 50%; transform: translateY(-50%); }
+  #lightbox .lb-next { right: 12px; top: 50%; transform: translateY(-50%); }
+  @media (max-width: 600px) {
+    #lightbox { padding: 56px 16px 16px; }
+    #lightbox .lb-prev, #lightbox .lb-next { top: auto; bottom: 14px; transform: none; }
   }
   .att-video, .att-audio {
     display: block;
@@ -308,6 +377,11 @@
         <input type="checkbox" id="hide-automated" checked>
         Hide automated / marketing (<span id="automated-count"></span>)
       </label>
+      <select id="screen-time-filter" title="Screen Time and Ask to Buy requests (&quot;… asked for more time for …&quot;, &quot;… asked to get the app …&quot;)">
+        <option value="hide">Hide Screen Time requests</option>
+        <option value="all">Show all messages</option>
+        <option value="only">Only Screen Time requests</option>
+      </select>
     </div>
     <div id="meta"></div>
     <div id="chat-list"></div>
@@ -315,6 +389,14 @@
   <div id="thread">
     <div id="empty-state">Select a conversation</div>
   </div>
+</div>
+
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Photo">
+  <button class="lb-close" aria-label="Close">✕</button>
+  <button class="lb-prev" aria-label="Previous photo">‹</button>
+  <button class="lb-next" aria-label="Next photo">›</button>
+  <img alt="">
+  <div class="lb-caption"></div>
 </div>
 
 <script src="messages_data.js"></script>
@@ -326,11 +408,12 @@ const searchEl = document.getElementById('search');
 const metaEl = document.getElementById('meta');
 const hideAutomatedEl = document.getElementById('hide-automated');
 const automatedCountEl = document.getElementById('automated-count');
+const screenTimeEl = document.getElementById('screen-time-filter');
 
 let selectedChatId = null;
 
 const sortedChats = [...DATA.chats].sort((a, b) => {
-  return new Date(b._last_date || 0) - new Date(a._last_date || 0);
+  return (parseDate(b._last_date) || 0) - (parseDate(a._last_date) || 0);
 });
 
 // Manual spam/automated overrides, kept per-browser (this data never leaves your machine).
@@ -342,6 +425,26 @@ function saveSpamOverrides(obj) {
   try { localStorage.setItem(SPAM_KEY, JSON.stringify(obj)); } catch { /* private browsing, etc. */ }
 }
 let spamOverrides = loadSpamOverrides();
+
+// Screen Time request filter (hide / all / only), remembered per-browser.
+const SCREEN_TIME_KEY = 'imessage_viewer_screen_time_filter';
+const screenTimeCount = DATA.chats.reduce((n, c) => n + c.messages.filter(m => m.screen_time).length, 0);
+try { screenTimeEl.value = localStorage.getItem(SCREEN_TIME_KEY) || 'hide'; } catch { /* private browsing, etc. */ }
+if (!screenTimeEl.value) screenTimeEl.value = 'hide';
+screenTimeEl.options[2].textContent = `Only Screen Time requests (${screenTimeCount})`;
+
+function visibleMessages(c) {
+  const mode = screenTimeEl.value;
+  if (mode === 'hide') return c.messages.filter(m => !m.screen_time);
+  if (mode === 'only') return c.messages.filter(m => m.screen_time);
+  return c.messages;
+}
+
+function lastVisibleDate(c) {
+  if (screenTimeEl.value === 'all') return c._last_date;
+  const msgs = visibleMessages(c);
+  return msgs.length ? msgs[msgs.length - 1].date : null;
+}
 
 function isAutomated(c) {
   const ov = spamOverrides[c.chat_id];
@@ -355,9 +458,10 @@ refreshAutomatedCount();
 metaEl.textContent = `${DATA.chat_count} conversations`;
 
 function previewText(c) {
-  const cleaned = cleanText(c._last_preview);
+  const msgs = visibleMessages(c);
+  const last = msgs[msgs.length - 1];
+  const cleaned = screenTimeEl.value === 'all' ? cleanText(c._last_preview) : cleanText((last && last.text || '').slice(0, 120));
   if (cleaned) return cleaned;
-  const last = c.messages[c.messages.length - 1];
   const atts = last ? last.attachments : null;
   if (atts && atts.length) {
     const kind = atts[0].kind;
@@ -367,9 +471,17 @@ function previewText(c) {
   return '';
 }
 
+// The export writes UTC timestamps with no zone suffix ("2026-10-05T14:14:26.051000"),
+// which browsers would read as local time. Treat suffix-less timestamps as UTC.
+function parseDate(iso) {
+  if (!iso) return null;
+  const hasZone = /(Z|[+-]\d\d:?\d\d)$/.test(iso);
+  return new Date(hasZone ? iso : iso.replace(/(\.\d{3})\d+$/, '$1') + 'Z');
+}
+
 function fmtListDate(iso) {
   if (!iso) return '';
-  const d = new Date(iso);
+  const d = parseDate(iso);
   const now = new Date();
   const sameYear = d.getFullYear() === now.getFullYear();
   const diffDays = (now - d) / 86400000;
@@ -380,13 +492,46 @@ function fmtListDate(iso) {
 }
 
 function fmtDayDivider(iso) {
-  const d = new Date(iso);
+  const d = parseDate(iso);
   return d.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
 function fmtTime(iso) {
-  const d = new Date(iso);
+  const d = parseDate(iso);
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+// Time of a read/delivered/edited event: just the time if it's the same day
+// as the message, otherwise with the date too.
+function fmtEventTime(iso, messageDate) {
+  const e = parseDate(iso);
+  if (e.toDateString() === messageDate.toDateString()) return fmtTime(iso);
+  const sameYear = e.getFullYear() === messageDate.getFullYear();
+  return e.toLocaleString([], sameYear
+    ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+    : { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// "9:14 AM · Edited · Read 9:20 AM" under the message; hover for full dates.
+function renderMessageMeta(m, d) {
+  const parts = [fmtTime(m.date)];
+  const details = [`${m.from_me ? 'Sent' : 'Received'}: ${d.toLocaleString()}`];
+  if (m.date_edited) {
+    parts.push('Edited');
+    details.push(`Edited: ${parseDate(m.date_edited).toLocaleString()}`);
+  }
+  if (m.date_delivered) details.push(`Delivered: ${parseDate(m.date_delivered).toLocaleString()}`);
+  if (m.date_read) {
+    parts.push(`Read ${fmtEventTime(m.date_read, d)}`);
+    details.push(`Read${m.from_me ? '' : ' by you'}: ${parseDate(m.date_read).toLocaleString()}`);
+  } else if (m.from_me && m.date_delivered) {
+    parts.push('Delivered');
+  }
+  const meta = document.createElement('div');
+  meta.className = 'msg-time';
+  meta.textContent = parts.join(' · ');
+  meta.title = details.join('\n');
+  return meta;
 }
 
 function renderChatList(filter) {
@@ -395,6 +540,15 @@ function renderChatList(filter) {
   const frag = document.createDocumentFragment();
 
   let list = sortedChats;
+  if (screenTimeEl.value !== 'all') {
+    // Re-sort by the last message still shown, so a chat whose newest
+    // messages are hidden doesn't sit at the top with an older date.
+    list = list
+      .map(c => ({ c, last: parseDate(lastVisibleDate(c)) }))
+      .filter(x => x.last)
+      .sort((a, b) => b.last - a.last)
+      .map(x => x.c);
+  }
   if (hideAutomatedEl.checked) {
     list = list.filter(c => !isAutomated(c));
   }
@@ -402,7 +556,7 @@ function renderChatList(filter) {
     list = list.filter(c => {
       if ((c.name || '').toLowerCase().includes(q)) return true;
       if ((c.identifier || '').toLowerCase().includes(q)) return true;
-      return c.messages.some(m => m.text && m.text.toLowerCase().includes(q));
+      return visibleMessages(c).some(m => m.text && m.text.toLowerCase().includes(q));
     });
   }
 
@@ -413,7 +567,7 @@ function renderChatList(filter) {
     item.innerHTML = `
       <div class="row1">
         <div class="name">${isAutomated(c) ? '<span class="auto-badge">auto</span> ' : ''}${escapeHtml(c.name || 'Unknown')}</div>
-        <div class="date">${fmtListDate(c._last_date)}</div>
+        <div class="date">${fmtListDate(lastVisibleDate(c))}</div>
       </div>
       <div class="preview">${escapeHtml(previewText(c))}</div>
     `;
@@ -455,15 +609,25 @@ function renderAttachment(a) {
   }
 
   if (a.kind === 'image') {
+    // Clicking opens the photo in the in-page lightbox; Cmd/Ctrl-click still
+    // opens the original in a new tab.
     const link = document.createElement('a');
+    link.className = 'att-img-link';
     link.href = assetUrl(a.path);
     link.target = '_blank';
+    link.dataset.display = assetUrl(a.preview_path || a.path);
+    link.dataset.name = a.name;
     const img = document.createElement('img');
     img.className = 'att-img';
     img.loading = 'lazy';
-    img.src = assetUrl(a.preview_path || a.path);
+    img.src = link.dataset.display;
     img.alt = a.name;
     link.appendChild(img);
+    link.addEventListener('click', e => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+      e.preventDefault();
+      openLightbox(link);
+    });
     return link;
   }
   if (a.kind === 'video') {
@@ -489,6 +653,57 @@ function renderAttachment(a) {
   chip.innerHTML = `📎 ${escapeHtml(isPlugin ? 'Shared content' : a.name)} <span class="att-size">${fmtSize(a.size)}</span>`;
   return chip;
 }
+
+// In-page photo viewer. Steps through the photos in the open conversation.
+const lightboxEl = document.getElementById('lightbox');
+const lightboxImg = lightboxEl.querySelector('img');
+const lightboxCaption = lightboxEl.querySelector('.lb-caption');
+let lightboxLinks = [];
+let lightboxIndex = 0;
+
+function openLightbox(link) {
+  lightboxLinks = [...threadEl.querySelectorAll('a.att-img-link')];
+  lightboxIndex = Math.max(0, lightboxLinks.indexOf(link));
+  showLightboxPhoto();
+  lightboxEl.classList.add('open');
+  lightboxEl.querySelector('.lb-close').focus();
+}
+
+function showLightboxPhoto() {
+  const link = lightboxLinks[lightboxIndex];
+  lightboxImg.src = link.dataset.display;
+  lightboxImg.alt = link.dataset.name;
+  const row = link.closest('.msg-row');
+  const time = row && row.querySelector('.msg-time');
+  const count = lightboxLinks.length > 1 ? `${lightboxIndex + 1} of ${lightboxLinks.length} · ` : '';
+  lightboxCaption.innerHTML = `${count}${escapeHtml(time ? time.title.split('\n')[0] : link.dataset.name)}`
+    + `<a href="${link.getAttribute('href')}" target="_blank">Open original</a>`;
+  const multiple = lightboxLinks.length > 1;
+  lightboxEl.querySelector('.lb-prev').style.display = multiple ? '' : 'none';
+  lightboxEl.querySelector('.lb-next').style.display = multiple ? '' : 'none';
+}
+
+function stepLightbox(delta) {
+  if (lightboxLinks.length < 2) return;
+  lightboxIndex = (lightboxIndex + delta + lightboxLinks.length) % lightboxLinks.length;
+  showLightboxPhoto();
+}
+
+function closeLightbox() {
+  lightboxEl.classList.remove('open');
+  lightboxImg.removeAttribute('src');
+}
+
+lightboxEl.querySelector('.lb-close').addEventListener('click', closeLightbox);
+lightboxEl.querySelector('.lb-prev').addEventListener('click', () => stepLightbox(-1));
+lightboxEl.querySelector('.lb-next').addEventListener('click', () => stepLightbox(1));
+lightboxEl.addEventListener('click', e => { if (e.target === lightboxEl) closeLightbox(); });
+document.addEventListener('keydown', e => {
+  if (!lightboxEl.classList.contains('open')) return;
+  if (e.key === 'Escape') closeLightbox();
+  else if (e.key === 'ArrowLeft') stepLightbox(-1);
+  else if (e.key === 'ArrowRight') stepLightbox(1);
+});
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, ch => ({
@@ -570,12 +785,13 @@ function selectChat(chatId) {
 
 function renderThread(chat) {
   const automated = isAutomated(chat);
+  const shown = visibleMessages(chat);
   threadEl.innerHTML = `
     <div id="thread-header">
       <div class="row1">
         <div>
           <div class="name">${automated ? '<span class="auto-badge">auto</span> ' : ''}${escapeHtml(chat.name || 'Unknown')}</div>
-          <div class="sub">${chat.messages.length} messages · ${escapeHtml(chat.identifier || '')}</div>
+          <div class="sub">${shown.length} messages · ${escapeHtml(chat.identifier || '')}</div>
         </div>
         <button id="spam-btn" class="${automated ? 'is-spam' : ''}">${automated ? 'Not spam' : 'Mark as spam'}</button>
       </div>
@@ -595,9 +811,9 @@ function renderThread(chat) {
   const { onTarget, hidden } = collectReactions(chat, byGuid);
 
   let lastDay = null;
-  for (const m of chat.messages) {
+  for (const m of shown) {
     if (hidden.has(m)) continue;
-    const d = m.date ? new Date(m.date) : null;
+    const d = parseDate(m.date);
     const dayKey = d ? d.toDateString() : null;
     if (dayKey && dayKey !== lastDay) {
       const divider = document.createElement('div');
@@ -638,6 +854,11 @@ function renderThread(chat) {
       bubble.className = 'bubble';
       bubble.textContent = cleaned;
       wrap.appendChild(bubble);
+    } else if (m.unsent) {
+      const bubble = document.createElement('div');
+      bubble.className = 'unsent-note';
+      bubble.textContent = m.from_me ? 'You unsent a message' : `${m.sender_name || m.sender || 'Someone'} unsent a message`;
+      wrap.appendChild(bubble);
     } else if (!hasAttachments) {
       const bubble = document.createElement('div');
       bubble.className = 'bubble empty';
@@ -646,6 +867,7 @@ function renderThread(chat) {
     }
     const reactions = m.guid && onTarget.get(m.guid);
     if (reactions && reactions.size) wrap.appendChild(renderReactions(reactions));
+    if (d) wrap.appendChild(renderMessageMeta(m, d));
     row.appendChild(wrap);
     frag.appendChild(row);
   }
@@ -655,6 +877,13 @@ function renderThread(chat) {
 
 searchEl.addEventListener('input', () => renderChatList(searchEl.value));
 hideAutomatedEl.addEventListener('change', () => renderChatList(searchEl.value));
+screenTimeEl.addEventListener('change', () => {
+  try { localStorage.setItem(SCREEN_TIME_KEY, screenTimeEl.value); } catch { /* private browsing, etc. */ }
+  renderChatList(searchEl.value);
+  const chat = selectedChatId != null && DATA.chats.find(c => c.chat_id === selectedChatId);
+  if (chat && visibleMessages(chat).length) renderThread(chat);
+  else { selectedChatId = null; threadEl.innerHTML = '<div id="empty-state">Select a conversation</div>'; }
+});
 
 renderChatList('');
 </script>

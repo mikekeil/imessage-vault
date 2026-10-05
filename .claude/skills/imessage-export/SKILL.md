@@ -131,8 +131,14 @@ they won't remember.
 If the user wants recurring backups, point them at `install-schedule.sh`
 (daily export + monthly archive via launchd; see the README). Pass
 `--export-flags` matching the flags their existing export was made with,
-or incremental runs will switch to full-size originals. The jobs need Full
-Disk Access for `/bin/zsh`.
+or incremental runs will switch to full-size originals. The jobs don't
+inherit Terminal's Full Disk Access: they need `/bin/zsh`, the real
+`python3` binary (`realpath "$(which python3)"`), and, for framework
+Pythons, `Python.app`, each with its toggle turned on. You can't grant
+these yourself. Give the user the exact paths, then confirm with the
+read-only `TCC.db` query and the `launchctl kickstart` test in the README's
+"Full Disk Access for scheduled jobs" section. Don't treat a grant as working
+until the log shows `Pulled N new messages`.
 
 To rebuild messages from archives, run
 `python3 backup_archive.py restore <zips...> -o <new folder>` (add
