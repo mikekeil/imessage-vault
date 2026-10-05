@@ -40,6 +40,9 @@ Apple Inc.
   recorded them. Hover a time for the full dates. Read times for messages
   you sent only exist if the other person shares read receipts. Unsent
   messages show as "unsent a message" instead of an empty bubble.
+- **Shows group events** ("Jane added Bob to the conversation", renamed
+  groups, people leaving, group photo changes, location sharing) as centered
+  notes, the way Messages does, instead of empty bubbles.
 - **Filters Screen Time requests** ("X asked for more time for ...") and Ask
   to Buy requests ("X asked to get the app ...") out of conversations by
   default, with a dropdown to show them, or to show only

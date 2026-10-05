@@ -382,14 +382,68 @@ def event_time(raw, message_raw):
     return apple_time_to_iso(raw)
 
 
-EXTRA_COLUMNS = ("balloon_bundle_id", "message_summary_info", "date_read", "date_delivered", "date_edited")
+EXTRA_COLUMNS = (
+    "balloon_bundle_id", "message_summary_info", "date_read", "date_delivered", "date_edited",
+    "handle_id", "item_type", "group_action_type", "other_handle", "group_title", "share_status",
+)
 
 
-def message_extras(row, text):
+def load_handles(conn):
+    """{handle ROWID: phone number / email}."""
+    return {rowid: ident for rowid, ident in conn.execute("SELECT ROWID, id FROM handle")}
+
+
+def describe_event(row, name_for, handles):
+    """Text for a non-message row (someone added, group renamed, location
+    shared, ...), or None for an ordinary message. Messages stores these
+    with an item_type and no text; the person who did it is handle_id (0 is
+    you) and the person it was done to is other_handle."""
+    item_type = row["item_type"] or 0
+    if not item_type:
+        return None
+    action = row["group_action_type"] or 0
+
+    def person(handle_rowid):
+        ident = handles.get(handle_rowid or 0)
+        if not ident:
+            return None
+        return name_for(ident) or ident
+
+    actor = person(row["handle_id"]) or "You"
+    target = person(row["other_handle"]) or "someone"
+    if item_type == 1:
+        if (row["handle_id"] or 0) == (row["other_handle"] or 0):
+            return f"{actor} joined the conversation" if action == 0 else f"{actor} left the conversation"
+        if action == 0:
+            return f"{actor} added {target} to the conversation"
+        return f"{actor} removed {target} from the conversation"
+    if item_type == 2:
+        title = row["group_title"]
+        return f"{actor} named the conversation \u201c{title}\u201d" if title else f"{actor} removed the conversation name"
+    if item_type == 3:
+        return {
+            0: f"{actor} left the conversation",
+            1: f"{actor} changed the group photo",
+            2: f"{actor} removed the group photo",
+        }.get(action, "The conversation photo was updated")
+    if item_type == 4:
+        stopped = (row["share_status"] or 0) == 1
+        return f"{actor} {'stopped' if stopped else 'started'} sharing location"
+    if item_type == 5:
+        return f"{actor} kept an audio message"
+    if item_type == 6:
+        return "FaceTime call"
+    return None
+
+
+def message_extras(row, text, name_for, handles):
     """Optional per-message fields, only the ones that apply, to keep the
-    export small: screen_time, unsent, and date_read / date_delivered /
+    export small: screen_time, unsent, event, and date_read / date_delivered /
     date_edited. row needs date plus EXTRA_COLUMNS; text is the decoded text."""
     extras = {}
+    event = describe_event(row, name_for, handles)
+    if event:
+        extras["event"] = event
     if is_screen_time(row["balloon_bundle_id"]):
         extras["screen_time"] = True
     unsent = is_unsent(row["message_summary_info"], text)
@@ -410,12 +464,13 @@ def extra_columns_sql(conn):
     )
 
 
-def db_message_extras(db_path: Path):
+def db_message_extras(db_path: Path, name_for):
     """{guid: extras} for every message in chat.db that has any, used to fill
     in messages already in an existing export. Messages deleted from chat.db
     (e.g. by Keep Messages expiring them) can't be updated this way."""
     conn = open_db(db_path)
     conn.row_factory = sqlite3.Row
+    handles = load_handles(conn)
     extras_by_guid = {}
     for row in conn.execute(
         f"SELECT guid, date, text, attributedBody,\n{extra_columns_sql(conn)}\nFROM message"
@@ -423,7 +478,7 @@ def db_message_extras(db_path: Path):
         text = row["text"]
         if row["message_summary_info"] and not (text or "").strip():
             text = extract_text_from_attributed_body(row["attributedBody"])
-        extras = message_extras(row, text)
+        extras = message_extras(row, text, name_for, handles)
         if extras:
             extras_by_guid[row["guid"]] = extras
     conn.close()
@@ -675,6 +730,7 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
     ).fetchall()
 
     name_cache = {}
+    handles = load_handles(conn)
 
     def name_for(identifier):
         if identifier not in name_cache:
@@ -741,7 +797,7 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
         reply_to, _ = parse_message_ref(row["thread_originator_guid"])
         if reply_to:
             message["reply_to"] = reply_to
-        message.update(message_extras(row, text))
+        message.update(message_extras(row, text, name_for, handles))
         chats[chat_id]["messages"].append(message)
 
     conn.close()
@@ -802,7 +858,7 @@ def export(db_path: Path, output_dir: Path, skip_contacts: bool, skip_attachment
 
     if existing:
         existing_chats = {c["chat_id"]: c for c in existing["chats"]}
-        extras_by_guid = db_message_extras(db_path)
+        extras_by_guid = db_message_extras(db_path, name_for)
         if skip_screen_time:
             screen_time = {guid for guid, extras in extras_by_guid.items() if extras.get("screen_time")}
             removed = remove_messages_by_guid(existing_chats, screen_time)

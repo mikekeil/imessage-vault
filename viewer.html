@@ -188,6 +188,19 @@
     color: var(--text-secondary);
     margin: 18px 0 10px;
   }
+  .event-row {
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    margin: 8px 0;
+  }
+  .event-row .event-time { margin-left: 6px; opacity: 0.8; }
+  .event-row .att-img {
+    display: inline-block;
+    max-height: 64px;
+    border-radius: 50%;
+    margin: 6px auto 0;
+  }
   .msg-row {
     display: flex;
     margin-bottom: 3px;
@@ -462,6 +475,7 @@ function previewText(c) {
   const last = msgs[msgs.length - 1];
   const cleaned = screenTimeEl.value === 'all' ? cleanText(c._last_preview) : cleanText((last && last.text || '').slice(0, 120));
   if (cleaned) return cleaned;
+  if (last && last.event) return last.event;
   const atts = last ? last.attachments : null;
   if (atts && atts.length) {
     const kind = atts[0].kind;
@@ -821,6 +835,29 @@ function renderThread(chat) {
       divider.textContent = fmtDayDivider(m.date);
       frag.appendChild(divider);
       lastDay = dayKey;
+    }
+
+    // Group events (added, renamed, left, location shared, ...) are centered
+    // notes, not bubbles. A changed group photo still shows, as a small thumbnail.
+    if (m.event) {
+      const note = document.createElement('div');
+      note.className = 'event-row';
+      note.textContent = m.event;
+      if (d) {
+        const time = document.createElement('span');
+        time.className = 'event-time';
+        time.textContent = fmtTime(m.date);
+        time.title = d.toLocaleString();
+        note.appendChild(time);
+      }
+      for (const a of m.attachments || []) {
+        if (a.kind !== 'image') continue;
+        const holder = document.createElement('div');
+        holder.appendChild(renderAttachment(a));
+        note.appendChild(holder);
+      }
+      frag.appendChild(note);
+      continue;
     }
 
     const row = document.createElement('div');
