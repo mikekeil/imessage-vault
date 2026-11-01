@@ -9,16 +9,20 @@ Pass --full-rebuild to ignore the existing export and start over.
 Resolves sender/participant names against the local Contacts database (all
 sources under ~/Library/Application Support/AddressBook), flags chats that
 look like automated/marketing/OTP traffic, and copies every attachment
-(except GIFs) into the same output folder so the whole export is a single,
-portable directory -- move it, zip it, put it on a backup drive, and it still
-works, even after the originals in ~/Library/Messages/Attachments are gone.
-HEIC photos additionally get a JPEG preview generated, since no browser can
-display HEIC natively.
+(except GIFs) so the export keeps working even after the originals in
+~/Library/Messages/Attachments are gone. HEIC photos additionally get a JPEG
+preview generated, since no browser can display HEIC natively.
+
+Default layout: ~/iMessage-Vault/cloud-backup holds the messages, the viewer
+and archives/ (the folder to back up to a cloud service), and attachments
+sit beside it in ~/iMessage-Vault/attachments. --migrate moves a pre-2.0
+export (~/iMessage-Export) into that layout.
 """
 
 import argparse
 import glob
 import json
+import os
 import plistlib
 import re
 import shutil
@@ -32,11 +36,28 @@ from pathlib import Path
 
 APPLE_EPOCH = datetime(2001, 1, 1)
 DEFAULT_DB = Path.home() / "Library" / "Messages" / "chat.db"
-DEFAULT_OUTPUT_DIR = Path.home() / "iMessage-Export"
+# Default layout (2.0):
+#   ~/iMessage-Vault/
+#     attachments/        every copied attachment (large; not meant for cloud sync)
+#     cloud-backup/       the folder to back up to Google Drive etc.
+#       viewer.html, messages.json, messages_data.js
+#       archives/         monthly and yearly zips (attachments included)
+VAULT_DIR = Path.home() / "iMessage-Vault"
+DEFAULT_OUTPUT_DIR = VAULT_DIR / "cloud-backup"
+DEFAULT_ATTACHMENTS_DIR = VAULT_DIR / "attachments"
+ARCHIVES_DIRNAME = "archives"
+DEFAULT_ARCHIVE_DIR = DEFAULT_OUTPUT_DIR / ARCHIVES_DIRNAME
+ARCHIVE_PREFIX = "iMessage-Export"  # archive file names start with this
+# Defaults before 2.0, for --migrate.
+LEGACY_OUTPUT_DIR = Path.home() / "iMessage-Export"
+LEGACY_ARCHIVE_DIR = Path.home() / "iMessage-Export-Archives"
 CONTACTS_GLOB = str(
     Path.home() / "Library" / "Application Support" / "AddressBook" / "Sources" / "*" / "AddressBook-v22.abcddb"
 )
 ATTACHMENTS_DIRNAME = "attachments"
+# messages.json key recording where attachment files live, relative to the
+# export folder. Absent means the default, <export>/attachments.
+ATTACHMENTS_DIR_KEY = "attachments_dir"
 
 SKIP_EXTS = {".gif"}  # not worth the space -- excluded entirely, not just hidden
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heics"}
@@ -260,12 +281,65 @@ def compute_is_automated(identifier, has_contact_match, messages):
 # Attachments
 #
 # Every attachment (except GIFs, which are skipped entirely) is copied into
-# ATTACHMENTS_DIRNAME inside the output folder, so the export is a single,
-# self-contained, movable directory -- it no longer depends on the originals
+# the export's attachment folder, so the export is self-contained and
+# movable -- it no longer depends on the originals
 # in ~/Library/Messages/Attachments still existing. HEIC/HEIC-sequence images
 # additionally get a JPEG preview generated (via macOS's built-in `sips`),
 # since no browser can display HEIC natively.
+#
+# The attachment folder can live outside the export folder (by default it's
+# ~/iMessage-Vault/attachments, beside cloud-backup/), so a cloud backup of
+# the export folder skips gigabytes of photos. Each
+# attachment's "path" in messages.json is always "attachments/<file>", a
+# logical path; the real folder is recorded once, in ATTACHMENTS_DIR_KEY, and
+# resolved through attachments_dir_for() / attachment_file().
 # ---------------------------------------------------------------------------
+
+def attachments_dir_for(output_dir: Path, data=None) -> Path:
+    """The folder holding the export's attachment files."""
+    rel = (data or {}).get(ATTACHMENTS_DIR_KEY) or ATTACHMENTS_DIRNAME
+    return Path(os.path.normpath(output_dir / rel))
+
+
+def attachment_file(attachments_dir: Path, logical_path: str) -> Path:
+    """Map a stored "attachments/<file>" path to the file on disk."""
+    return attachments_dir / logical_path[len(ATTACHMENTS_DIRNAME) + 1:]
+
+
+def relocate_attachments(old: Path, new: Path):
+    """Move attachment files from old to new. A same-disk move is one rename;
+    otherwise files are moved one at a time, so an interrupted run can simply
+    be re-run. Files already present in new are left alone."""
+    old, new = old.resolve(), new.resolve()
+    if old == new or not old.exists():
+        return
+    if new.is_relative_to(old) or old.is_relative_to(new):
+        sys.exit(f"Can't move attachments between {old} and {new}: one is inside the other.")
+    if not new.exists() or not any(new.iterdir()):
+        print(f"Moving attachments from {old} to {new}...", file=sys.stderr, flush=True)
+        new.parent.mkdir(parents=True, exist_ok=True)
+        if new.exists():
+            new.rmdir()
+        try:
+            old.rename(new)
+            return
+        except OSError:
+            new.mkdir(parents=True, exist_ok=True)  # different disk: fall through to per-file moves
+    else:
+        print(f"Merging attachments from {old} into {new}...", file=sys.stderr, flush=True)
+    kept = 0
+    for src in old.iterdir():
+        dest = new / src.name
+        if dest.exists():
+            kept += 1
+        else:
+            shutil.move(str(src), str(dest))
+    if kept:
+        print(f"Left {kept} files in {old} that already exist in {new}; delete them once you've checked.",
+              file=sys.stderr, flush=True)
+    else:
+        old.rmdir()
+
 
 def image_longest_side(path: Path):
     try:
@@ -666,7 +740,7 @@ def open_db(db_path: Path):
 
 def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_attachments: bool,
                     skip_previews: bool, min_message_id: int, skip_videos: bool = False,
-                    max_image_dim: int = None, skip_screen_time: bool = False):
+                    max_image_dim: int = None, skip_screen_time: bool = False, attachments_dir: Path = None):
     """Pull every message with ROWID > min_message_id (0 for a full pull),
     grouped by chat. Does not compute derived per-chat fields (is_automated,
     _last_date, etc.) -- call finalize_chats() after merging with any
@@ -683,7 +757,6 @@ def pull_new_chats(db_path: Path, output_dir: Path, skip_contacts: bool, skip_at
     if skip_attachments:
         attachments_by_message = {}
     else:
-        attachments_dir = output_dir / ATTACHMENTS_DIRNAME
         attachments_by_message = load_attachments_by_message(
             conn, attachments_dir, skip_previews, min_message_id, skip_videos, max_image_dim
         )
@@ -832,18 +905,53 @@ def finalize_chats(chats, name_for):
     return chats
 
 
+def write_export_files(output_dir: Path, data):
+    (output_dir / "messages.json").write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    with (output_dir / "messages_data.js").open("w", encoding="utf-8") as f:
+        f.write("window.MESSAGES_DATA = ")
+        json.dump(data, f, ensure_ascii=False)
+        f.write(";")
+
+
 def export(db_path: Path, output_dir: Path, skip_contacts: bool, skip_attachments: bool,
            skip_previews: bool, full_rebuild: bool, skip_videos: bool = False, max_image_dim: int = None,
-           skip_screen_time: bool = False):
+           skip_screen_time: bool = False, attachments_dir: Path = None):
+    if (output_dir.resolve() == DEFAULT_OUTPUT_DIR.resolve() and not (output_dir / "messages.json").exists()
+            and (LEGACY_OUTPUT_DIR / "messages.json").exists()):
+        sys.exit(f"Found an export at {LEGACY_OUTPUT_DIR}, the location before version 2.0.\n"
+                 f"Run `python3 extract_imessages.py --migrate` once to move it into {VAULT_DIR},\n"
+                 f"or pass --output-dir {LEGACY_OUTPUT_DIR} to keep using it where it is.")
     output_dir.mkdir(parents=True, exist_ok=True)
     existing_path = output_dir / "messages.json"
 
     existing = None
-    if existing_path.exists() and not full_rebuild:
+    if existing_path.exists():
         try:
             existing = json.loads(existing_path.read_text())
         except (json.JSONDecodeError, OSError):
             existing = None
+
+    # The attachment folder is remembered in messages.json (even across a full
+    # rebuild), so only the run that moves it needs --attachments-dir.
+    if existing is not None:
+        current_attachments = attachments_dir_for(output_dir, existing)
+    elif output_dir.resolve() == DEFAULT_OUTPUT_DIR.resolve():
+        current_attachments = DEFAULT_ATTACHMENTS_DIR
+    else:
+        current_attachments = output_dir / ATTACHMENTS_DIRNAME
+    if attachments_dir is None:
+        attachments_dir = current_attachments
+    else:
+        attachments_dir = attachments_dir.expanduser().resolve()
+        relocate_attachments(current_attachments, attachments_dir)
+        if existing and attachments_dir != current_attachments.resolve():
+            # Record the new location right away, so an interrupted run never
+            # leaves messages.json pointing at the old, now-empty folder.
+            existing[ATTACHMENTS_DIR_KEY] = os.path.relpath(attachments_dir, output_dir.resolve())
+            write_export_files(output_dir, existing)
+    attachments_rel = os.path.relpath(attachments_dir.resolve(), output_dir.resolve())
+    if full_rebuild:
+        existing = None
 
     min_message_id = existing.get("last_message_id", 0) if existing else 0
     if existing:
@@ -853,7 +961,7 @@ def export(db_path: Path, output_dir: Path, skip_contacts: bool, skip_attachment
 
     new_chats, max_message_id, name_for = pull_new_chats(
         db_path, output_dir, skip_contacts, skip_attachments, skip_previews, min_message_id,
-        skip_videos, max_image_dim, skip_screen_time
+        skip_videos, max_image_dim, skip_screen_time, attachments_dir
     )
 
     if existing:
@@ -877,16 +985,11 @@ def export(db_path: Path, output_dir: Path, skip_contacts: bool, skip_attachment
         "source_db": str(db_path),
         "chat_count": len(all_chats),
         "last_message_id": max_message_id,
+        ATTACHMENTS_DIR_KEY: attachments_rel,
         "chats": sorted(all_chats.values(), key=lambda c: c["chat_id"]),
     }
 
-    existing_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-
-    data_js = output_dir / "messages_data.js"
-    with data_js.open("w", encoding="utf-8") as f:
-        f.write("window.MESSAGES_DATA = ")
-        json.dump(data, f, ensure_ascii=False)
-        f.write(";")
+    write_export_files(output_dir, data)
 
     viewer_src = Path(__file__).resolve().parent / "viewer.html"
     if viewer_src.exists():
@@ -941,16 +1044,70 @@ def create_archive(output_dir: Path, db_path: Path, archive_path: Path) -> Path:
         backup_database(db_path, db_backup_path)
 
         print(f"Zipping {output_dir} plus the database backup...", file=sys.stderr, flush=True)
+        data = None
+        if (output_dir / "messages.json").exists():
+            data = json.loads((output_dir / "messages.json").read_text())
+        attachments_dir = attachments_dir_for(output_dir, data)
+        root = Path(output_dir.name)
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file in output_dir.rglob("*"):
                 # skip the zip itself if --archive-dir points inside the export folder
                 if file.is_file() and file.resolve() != archive_path.resolve():
-                    zf.write(file, Path(output_dir.name) / file.relative_to(output_dir))
-            zf.write(db_backup_path, Path(output_dir.name) / "chat-backup.db")
+                    rel = file.relative_to(output_dir)
+                    if rel.parts[0] in (ARCHIVES_DIRNAME, ".tmp.driveupload") or (
+                            len(rel.parts) == 1 and file.suffix == ".zip"):
+                        continue  # earlier archives, and Google Drive's upload scratch folder
+                    if data and str(rel) in ("messages.json", "messages_data.js"):
+                        continue
+                    zf.write(file, root / rel)
+            if data:
+                # Inside the zip, attachments always sit in the default folder.
+                data.pop(ATTACHMENTS_DIR_KEY, None)
+                zf.writestr(str(root / "messages.json"), json.dumps(data, indent=2, ensure_ascii=False))
+                zf.writestr(str(root / "messages_data.js"),
+                            "window.MESSAGES_DATA = " + json.dumps(data, ensure_ascii=False) + ";")
+            if not attachments_dir.resolve().is_relative_to(output_dir.resolve()) and attachments_dir.exists():
+                for file in attachments_dir.rglob("*"):
+                    if file.is_file():
+                        zf.write(file, root / ATTACHMENTS_DIRNAME / file.relative_to(attachments_dir))
+            zf.write(db_backup_path, root / "chat-backup.db")
 
     size_mb = archive_path.stat().st_size / (1024 * 1024)
     print(f"Archive created: {archive_path} ({size_mb:.1f} MB)", file=sys.stderr, flush=True)
     return archive_path
+
+
+def migrate_legacy_layout():
+    """Move the pre-2.0 layout (~/iMessage-Export with attachments inside it,
+    ~/iMessage-Export-Archives) into ~/iMessage-Vault. Only renames folders, so
+    it's instant on one disk and touches no file contents."""
+    if not (LEGACY_OUTPUT_DIR / "messages.json").exists():
+        sys.exit(f"No pre-2.0 export at {LEGACY_OUTPUT_DIR}; nothing to migrate.")
+    if DEFAULT_OUTPUT_DIR.exists():
+        sys.exit(f"{DEFAULT_OUTPUT_DIR} already exists; move things by hand or remove it first.")
+    data = json.loads((LEGACY_OUTPUT_DIR / "messages.json").read_text())
+    old_attachments = attachments_dir_for(LEGACY_OUTPUT_DIR, data).resolve()
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(f"Moving {LEGACY_OUTPUT_DIR} to {DEFAULT_OUTPUT_DIR}")
+    LEGACY_OUTPUT_DIR.rename(DEFAULT_OUTPUT_DIR)
+    if old_attachments.is_relative_to(LEGACY_OUTPUT_DIR.resolve()):
+        old_attachments = DEFAULT_OUTPUT_DIR / old_attachments.relative_to(LEGACY_OUTPUT_DIR.resolve())
+    relocate_attachments(old_attachments, DEFAULT_ATTACHMENTS_DIR)
+    data[ATTACHMENTS_DIR_KEY] = os.path.relpath(DEFAULT_ATTACHMENTS_DIR.resolve(), DEFAULT_OUTPUT_DIR.resolve())
+    write_export_files(DEFAULT_OUTPUT_DIR, data)
+    viewer_src = Path(__file__).resolve().parent / "viewer.html"
+    if viewer_src.exists():
+        shutil.copy(viewer_src, DEFAULT_OUTPUT_DIR / "viewer.html")
+
+    if LEGACY_ARCHIVE_DIR.exists() and DEFAULT_ARCHIVE_DIR.exists():
+        print(f"Left {LEGACY_ARCHIVE_DIR} in place: {DEFAULT_ARCHIVE_DIR} already exists. Merge them by hand.")
+    elif LEGACY_ARCHIVE_DIR.exists():
+        print(f"Moving {LEGACY_ARCHIVE_DIR} to {DEFAULT_ARCHIVE_DIR}")
+        LEGACY_ARCHIVE_DIR.rename(DEFAULT_ARCHIVE_DIR)
+    print(f"Done. Open {DEFAULT_OUTPUT_DIR / 'viewer.html'} to check it, then:\n"
+          f"  - re-run install-schedule.sh with your usual flags, if you use scheduled backups\n"
+          f"  - back up {DEFAULT_OUTPUT_DIR} (not {VAULT_DIR}) with Google Drive or similar")
 
 
 def main():
@@ -997,6 +1154,12 @@ def main():
              "if passed with no value; omit entirely to keep full-resolution originals.",
     )
     parser.add_argument(
+        "--attachments-dir", type=Path, default=None, metavar="PATH",
+        help="Keep attachment files in this folder instead of inside the export folder, e.g. "
+             "so a cloud backup of the export skips them. Existing attachments are moved "
+             "there, and later runs remember it, so you only need to pass it once.",
+    )
+    parser.add_argument(
         "--archive", action="store_true",
         help="Don't pull new messages -- just zip the current export together with a fresh "
              "chat.db snapshot into one dated file, ready to upload to Google Drive or "
@@ -1004,20 +1167,29 @@ def main():
     )
     parser.add_argument(
         "--archive-dir", type=Path, default=None,
-        help="Folder to write the archive zip into (default: next to --output-dir)",
+        help=f"Folder to write the archive zip into (default: {ARCHIVES_DIRNAME}/ inside --output-dir)",
+    )
+    parser.add_argument(
+        "--migrate", action="store_true",
+        help=f"Move a pre-2.0 export ({LEGACY_OUTPUT_DIR}, its attachments, and {LEGACY_ARCHIVE_DIR}) "
+             f"into the {VAULT_DIR} layout. Doesn't read chat.db.",
     )
     args = parser.parse_args()
 
+    if args.migrate:
+        migrate_legacy_layout()
+        return
+
     if args.archive:
-        archive_dir = args.archive_dir or args.output_dir.parent
+        archive_dir = args.archive_dir or args.output_dir / ARCHIVES_DIRNAME
         date_str = datetime.now().strftime("%Y-%m-%d")
-        archive_path = archive_dir / f"{args.output_dir.name}-Archive-{date_str}.zip"
+        archive_path = archive_dir / f"{ARCHIVE_PREFIX}-Archive-{date_str}.zip"
         create_archive(args.output_dir, args.db, archive_path)
         return
 
     export(args.db, args.output_dir, args.skip_contacts, args.skip_attachments,
            args.skip_previews, args.full_rebuild, args.skip_videos, args.max_image_dim,
-           args.skip_screen_time)
+           args.skip_screen_time, args.attachments_dir)
 
 
 if __name__ == "__main__":

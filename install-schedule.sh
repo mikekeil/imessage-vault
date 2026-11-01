@@ -22,7 +22,7 @@ AGENTS="$HOME/Library/LaunchAgents"
 LOGS="$HOME/Library/Logs/imessage-vault"
 PREFIX="${IMESSAGE_LAUNCHD_PREFIX:-local.imessage-vault}"
 
-EXPORT_FLAGS="" ARCHIVE_DIR="$HOME/iMessage-Export-Archives" MIRROR_DIR="" KEEP_FULL=2 UNINSTALL=0 PYTHON=""
+EXPORT_FLAGS="" ARCHIVE_DIR="$HOME/iMessage-Vault/cloud-backup/archives" MIRROR_DIR="" KEEP_FULL=2 UNINSTALL=0 PYTHON=""
 while (( $# )); do
   case "$1" in
     --export-flags) EXPORT_FLAGS="$2"; shift 2 ;;

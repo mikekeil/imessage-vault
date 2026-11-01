@@ -609,8 +609,14 @@ function fmtSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Attachment paths are stored as "attachments/<file>"; the folder itself may
+// live elsewhere (by default ../attachments, beside this page's folder),
+// recorded as a path relative to this page.
+const ATTACHMENTS_DIR = (DATA && DATA.attachments_dir) || 'attachments';
+
 // Attachment filenames can contain '#', '?' or '%', which would otherwise be read as URL syntax.
 function assetUrl(p) {
+  if (p.startsWith('attachments/')) p = ATTACHMENTS_DIR + p.slice('attachments'.length);
   return p.split('/').map(encodeURIComponent).join('/');
 }
 

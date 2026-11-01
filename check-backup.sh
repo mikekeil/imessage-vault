@@ -28,9 +28,9 @@ while (( $# )); do
   esac
 done
 
-plist_env() { plutil -extract "EnvironmentVariables.$1" raw -o - "$PLIST" 2>/dev/null; }
+plist_env() { [[ -f "$PLIST" ]] && plutil -extract "EnvironmentVariables.$1" raw -o - "$PLIST" 2>/dev/null; }
 ARCHIVE_DIR="${IMESSAGE_ARCHIVE_DIR:-$(plist_env IMESSAGE_ARCHIVE_DIR)}"
-ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/iMessage-Export-Archives}"
+ARCHIVE_DIR="${ARCHIVE_DIR:-$HOME/iMessage-Vault/cloud-backup/archives}"
 MIRROR_DIR="${IMESSAGE_MIRROR_DIR:-$(plist_env IMESSAGE_MIRROR_DIR)}"
 
 NOW=$(date +%s)

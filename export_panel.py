@@ -17,7 +17,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 EXPORT_SCRIPT = SCRIPT_DIR / "extract_imessages.py"
-DEFAULT_OUTPUT_DIR = Path.home() / "iMessage-Export"
+from extract_imessages import DEFAULT_OUTPUT_DIR  # noqa: E402  (same folder as this script)
 FDA_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
 PORT_RANGE = range(8765, 8785)
 

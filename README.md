@@ -52,8 +52,9 @@ Apple Inc.
   can keep it as a recurring backup without redoing a full pull every time.
   Pass `--full-rebuild` to start over from scratch.
 - **Self-contained and portable.** Everything (the data, the viewer, and
-  every attachment) lives in one folder. Zip it, move it to a backup drive,
-  copy it to another machine: it still works, even after the originals in
+  every attachment) lives under `~/iMessage-Vault`. Zip it, move it to a
+  backup drive, copy it to another machine: it still works, even after the
+  originals in
   `~/Library/Messages/Attachments` are gone (e.g. evicted by iCloud's
   "Optimize Mac Storage").
 
@@ -87,8 +88,8 @@ window stops it.
 There's also a "Create Archive Backup" button. It zips your current export
 (everything: messages, attachments, the viewer) together with a fresh
 snapshot of `chat.db` itself into one dated file, e.g.
-`iMessage-Export-Archive-2026-09-19.zip`, next to your export folder. That's
-the file to upload to Google Drive or another backup: self-contained, and it
+`iMessage-Export-Archive-2026-09-19.zip`, in `cloud-backup/archives/`.
+It's self-contained, and it
 includes a copy of the raw database in case anything ever needs re-exporting
 from scratch. It doesn't pull new messages first, so run "Export My Texts"
 beforehand if you want the archive to include your latest messages. Because
@@ -101,8 +102,55 @@ minutes, mostly spent generating photo previews and copying files). After
 that, just run the same command again whenever you want to catch up: it
 only pulls messages newer than what's already in the export.
 
-Everything lands in `~/iMessage-Export/`, deliberately *outside* this repo,
+Everything lands in `~/iMessage-Vault/`, deliberately *outside* this repo,
 so your exported messages can never end up in git history.
+
+### Folder layout
+
+```
+~/iMessage-Vault/
+├── attachments/          photos and files: almost all of the size
+└── cloud-backup/         back up this folder to Google Drive, iCloud Drive, etc.
+    ├── viewer.html       open this to browse your messages
+    ├── messages.json
+    ├── messages_data.js
+    └── archives/         monthly and yearly zips, attachments included
+```
+
+Attachments are gigabytes; the message text is tens of MB. Keeping them out
+of `cloud-backup/` means a folder backup (for example Google Drive's "Back up
+folders from your computer") uploads the text every day without re-scanning
+gigabytes of photos. The photos still reach the cloud inside the archive zips,
+in `cloud-backup/archives/`: each monthly zip has that month's new attachments,
+and a yearly full zip has all of them.
+
+The viewer loads attachments from `../attachments`, so keep the two folders
+side by side. The location is recorded in `messages.json`; to use a different
+one, pass `--attachments-dir` once (see below) and the files move there.
+
+### Upgrading from 1.x
+
+Before 2.0, everything lived in `~/iMessage-Export/` (attachments included)
+and archives in `~/iMessage-Export-Archives/`. Move both into the new layout
+once:
+
+```bash
+python3 extract_imessages.py --migrate
+```
+
+This only renames folders, so it's instant and leaves the files untouched.
+Until you run it, exports stop with a message pointing here rather than
+starting a second, empty export. Afterwards:
+
+- If you use scheduled backups, re-run `install-schedule.sh` with your usual
+  flags. Leave out `--mirror-dir` if it pointed at the same cloud service you
+  now back up `cloud-backup/` with, or every archive gets uploaded twice.
+- In Google Drive (or similar), stop backing up `~/iMessage-Export` and back
+  up `~/iMessage-Vault/cloud-backup` instead. The old copy in the cloud isn't
+  deleted for you.
+- If your archives were somewhere other than `~/iMessage-Export-Archives`,
+  move them into `cloud-backup/archives/` yourself, including the hidden
+  `.archive-state.json`.
 
 ### More control: the command line
 
@@ -114,7 +162,8 @@ python3 extract_imessages.py
 ```
 
 ```
---output-dir PATH     Where to write the export (default: ~/iMessage-Export)
+--output-dir PATH     Where to write the export (default:
+                       ~/iMessage-Vault/cloud-backup)
 --full-rebuild        Ignore the existing export and pull everything from
                        scratch again, instead of just what's new
 --db PATH             Path to chat.db (default: ~/Library/Messages/chat.db,
@@ -136,11 +185,19 @@ python3 extract_imessages.py
                        Smaller export, some quality loss. HEIC photos are
                        converted to JPEG. Photos already under the limit
                        are copied as-is.
+--attachments-dir PATH
+                      Keep attachment files in this folder (default:
+                       ~/iMessage-Vault/attachments for the default
+                       export, otherwise <output-dir>/attachments).
+                       Existing attachments are moved there, and later
+                       runs remember it, so you only pass it once
 --archive             Don't pull new messages -- zip the current export
                        plus a fresh chat.db snapshot into one dated file
                        (run an export first if you haven't)
---archive-dir PATH    Where to write the archive zip (default: next to
-                       --output-dir)
+--archive-dir PATH    Where to write the archive zip (default: archives/
+                       inside --output-dir)
+--migrate             Move a pre-2.0 export into the ~/iMessage-Vault
+                       layout (see "Upgrading from 1.x")
 ```
 
 ## Scheduled backups and archives
@@ -149,17 +206,18 @@ For an ongoing backup, `install-schedule.sh` sets up two launchd jobs: a
 daily incremental export, and a monthly archive run.
 
 ```bash
-./install-schedule.sh --export-flags "--max-image-dim 2000" \
-    --mirror-dir "/path/to/any/synced/or/backup/folder"
+./install-schedule.sh --export-flags "--max-image-dim 2000"
 ```
 
 - `--export-flags`: the same flags you made your export with. Incremental
   runs don't remember them, so a mismatch (e.g. leaving out
   `--max-image-dim`) copies full-size originals from then on.
-- `--archive-dir`: where archives go (default `~/iMessage-Export-Archives`).
-- `--mirror-dir`: optional second copy in any folder you choose (an external
-  drive, or a Google Drive / iCloud Drive / Dropbox folder). Leave it out to
-  keep everything local.
+- `--archive-dir`: where archives go (default
+  `~/iMessage-Vault/cloud-backup/archives`, so a backup of `cloud-backup/`
+  includes them).
+- `--mirror-dir`: optional second copy of each archive in another folder,
+  such as an external drive. Not needed for a cloud service that already
+  backs up `cloud-backup/`.
 - `--keep-full N`: full archives to keep (default 2); see below.
 - `--python PATH`: the Python the jobs run. Defaults to macOS's own
   `/usr/bin/python3` when the Command Line Tools are installed (otherwise the
@@ -257,7 +315,7 @@ call `python3` directly.
 person has to click through System Settings. Find the exact paths, give them
 to the person, and use the read-only `TCC.db` query above to confirm the
 toggles are on, instead of assuming a grant worked. A sandboxed agent may
-also be able to read `chat.db` but not write to `~/iMessage-Export`. If an
+also be able to read `chat.db` but not write to `~/iMessage-Vault`. If an
 export fails with `PermissionError` on `messages.json`, that's the agent's
 sandbox, not Full Disk Access; have the person run the command.
 
@@ -307,7 +365,7 @@ everything in them is also in a newer full archive.
 Rebuild a normal, viewable export from whatever archives you have:
 
 ```bash
-python3 backup_archive.py restore ~/iMessage-Export-Archives/*.zip -o ~/iMessage-Restored
+python3 backup_archive.py restore ~/iMessage-Vault/cloud-backup/archives/*.zip -o ~/iMessage-Restored
 python3 backup_archive.py restore ... --verify-only   # report only, write nothing
 ```
 
@@ -333,13 +391,13 @@ Access if needed.
 
 - Nothing leaves your machine. There's no network call anywhere in this
   project.
-- The exported `messages.json` / `messages_data.js` / `attachments/` contain
-  your actual message content and media; treat that output folder like the
-  sensitive personal data it is. `.gitignore` in this repo blocks it from
-  ever being committed, but that only protects *this* repo, not wherever you
-  choose to back up the export folder itself. The same goes for archive
-  zips, which hold your message text (and, for full archives, a copy of
-  `chat.db`). If you use `--mirror-dir` with a cloud folder, that copy is
+- Everything under `~/iMessage-Vault` (`messages.json`, `messages_data.js`,
+  `attachments/`, the archive zips) is your actual message content and
+  media; treat it like the sensitive personal data it is. `.gitignore` in
+  this repo blocks it from ever being committed, but that only protects
+  *this* repo. Archive zips hold your message text and attachments (and, for
+  full archives, a copy of `chat.db`). If you back up `cloud-backup/` to a
+  cloud service, or use `--mirror-dir` with a cloud folder, that copy is
   stored by that provider.
 - The spam/automated flag and any manual overrides you set in the viewer are
   stored in your browser's local storage, scoped to the file, not synced or

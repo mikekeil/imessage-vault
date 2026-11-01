@@ -14,8 +14,8 @@ So losing any one archive costs at most that month's photos/videos, never
 text. `restore` rebuilds a normal, viewable export from whatever archives you
 have, and reports anything it couldn't recover.
 
-  python3 backup_archive.py create --archive-dir ~/iMessage-Export-Archives
-  python3 backup_archive.py restore ~/iMessage-Export-Archives/*.zip -o ~/restored
+  python3 backup_archive.py create
+  python3 backup_archive.py restore ~/iMessage-Vault/cloud-backup/archives/*.zip -o ~/restored
 
 `create` picks the kind automatically: full if the folder has no full archive
 yet or none from this year once --full-month has come around, otherwise
@@ -37,8 +37,9 @@ from datetime import datetime
 from pathlib import Path
 
 from extract_imessages import (
-    ATTACHMENTS_DIRNAME, DEFAULT_DB, DEFAULT_OUTPUT_DIR, IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS,
-    backup_database,
+    ARCHIVE_PREFIX, ATTACHMENTS_DIRNAME, ATTACHMENTS_DIR_KEY, DEFAULT_ARCHIVE_DIR, DEFAULT_DB,
+    DEFAULT_OUTPUT_DIR, IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS,
+    attachment_file, attachments_dir_for, backup_database,
 )
 
 MANIFEST_NAME = "archive_manifest.json"
@@ -95,14 +96,14 @@ def choose_kind(archive_dir: Path, full_month: int):
     return "monthly"
 
 
-def write_zip(path: Path, manifest, data, output_dir: Path, files, db_path):
+def write_zip(path: Path, manifest, data, attachments_dir: Path, files, db_path):
     tmp_path = path.with_name(path.name + ".partial")
     with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2))
         zf.writestr("messages.json", json.dumps(data, ensure_ascii=False))
         for rel in sorted(files):
             method = zipfile.ZIP_STORED if Path(rel).suffix.lower() in STORED_EXTS else zipfile.ZIP_DEFLATED
-            zf.write(output_dir / rel, rel, compress_type=method)
+            zf.write(attachment_file(attachments_dir, rel), rel, compress_type=method)
         if db_path:
             with tempfile.TemporaryDirectory() as tmp:
                 db_copy = Path(tmp) / "chat-backup.db"
@@ -129,6 +130,9 @@ def create(output_dir: Path, archive_dir: Path, kind: str, full_month: int, db_p
 
     data = json.loads(export_path.read_text())
     to_id = data["last_message_id"]
+    attachments_dir = attachments_dir_for(output_dir, data)
+    # Inside the archive, attachments always sit in the default "attachments/".
+    data.pop(ATTACHMENTS_DIR_KEY, None)
 
     if kind == "full":
         since_id = 0
@@ -145,7 +149,7 @@ def create(output_dir: Path, archive_dir: Path, kind: str, full_month: int, db_p
     new_files = all_files if kind == "full" else {
         f for c in data["chats"] for m in c["messages"] if m["id"] > since_id for f in attachment_paths(m)
     }
-    missing = sorted(f for f in new_files if not (output_dir / f).exists())
+    missing = sorted(f for f in new_files if not attachment_file(attachments_dir, f).exists())
     files = new_files - set(missing)
     new_messages = sum(1 for c in data["chats"] for m in c["messages"] if m["id"] > since_id)
 
@@ -164,8 +168,8 @@ def create(output_dir: Path, archive_dir: Path, kind: str, full_month: int, db_p
     }
     label = "Full" if kind == "full" else "Monthly"
     stamp = datetime.now().strftime("%Y-%m-%d")
-    path = archive_dir / f"{output_dir.name}-{label}-{stamp}-{since_id + 1}-{to_id}.zip"
-    write_zip(path, manifest, data, output_dir, files, db_path if kind == "full" else None)
+    path = archive_dir / f"{ARCHIVE_PREFIX}-{label}-{stamp}-{since_id + 1}-{to_id}.zip"
+    write_zip(path, manifest, data, attachments_dir, files, db_path if kind == "full" else None)
     write_state(archive_dir, to_id, path.name, datetime.now().year if kind == "full" else None)
 
     size_mb = path.stat().st_size / (1024 * 1024)
@@ -365,7 +369,8 @@ def main():
 
     c = sub.add_parser("create", help="Write a full or monthly archive")
     c.add_argument("--output-dir", "-o", type=Path, default=DEFAULT_OUTPUT_DIR, help="The export folder")
-    c.add_argument("--archive-dir", type=Path, required=True, help="Where archives and chain state live")
+    c.add_argument("--archive-dir", type=Path, default=DEFAULT_ARCHIVE_DIR,
+                   help=f"Where archives and chain state live (default: {DEFAULT_ARCHIVE_DIR})")
     c.add_argument("--kind", choices=["auto", "monthly", "full"], default="auto")
     c.add_argument("--full-month", type=int, default=1,
                    help="Month (1-12) from which auto makes that year's full archive (default: January)")

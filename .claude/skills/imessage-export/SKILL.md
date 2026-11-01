@@ -33,11 +33,20 @@ sibling of the `.claude/` directory this skill is under) and run it:
 python3 extract_imessages.py
 ```
 
-By default this writes everything to `~/iMessage-Export/`, deliberately
+By default this writes everything to `~/iMessage-Vault/`, deliberately
 *outside* the repo, so exported personal data never risks being committed to
-git.
+git: the messages and viewer in `~/iMessage-Vault/cloud-backup/` (the folder
+to back up to Google Drive etc.), attachments beside it in
+`~/iMessage-Vault/attachments/`, and archive zips in
+`cloud-backup/archives/`.
 
-**This runs incrementally by default.** If `~/iMessage-Export/messages.json`
+If the export stops with "Found an export at ~/iMessage-Export", the user
+has a pre-2.0 layout. Run `python3 extract_imessages.py --migrate` (it only
+renames folders) and then the export again; if they use scheduled backups,
+remind them to re-run `install-schedule.sh` and to point their cloud backup
+at `~/iMessage-Vault/cloud-backup`.
+
+**This runs incrementally by default.** If `cloud-backup/messages.json`
 already exists, the script only pulls messages newer than what's already
 there and merges them in: fast, and safe to run repeatedly (e.g. as a
 recurring backup). The first-ever run, or any run with `--full-rebuild`,
@@ -49,7 +58,7 @@ if the user explicitly wants to start over or you suspect the existing
 export is corrupted.
 
 Useful flags, pick based on what the user actually wants:
-- `--output-dir PATH`: export somewhere other than `~/iMessage-Export`
+- `--output-dir PATH`: export somewhere other than `~/iMessage-Vault/cloud-backup`
 - `--full-rebuild`: ignore the existing export and pull everything again
   from scratch, instead of just what's new
 - `--skip-attachments`: text only, much faster, nothing copied
@@ -62,6 +71,9 @@ Useful flags, pick based on what the user actually wants:
   on the longest side (2000 if given with no value) instead of copying
   full-resolution originals. Suggest it when the user is worried about
   export size or upload time; it trades some photo quality for space
+- `--attachments-dir PATH`: move the attachment files to another folder.
+  Existing files are moved there and the location is remembered, so it's
+  only needed once
 - `--skip-contacts`: don't resolve names against Contacts.app
 - `--db PATH`: point at a different chat.db, e.g. from a Time Machine
   backup, if the user is trying to recover messages from an old machine
@@ -80,16 +92,19 @@ server needed). Mention the sidebar's "Hide automated / marketing" toggle
 and that they can correct any conversation it misclassifies with the
 "Mark as spam" / "Not spam" button in that conversation's thread view.
 
-The whole output folder (`messages.json`, `messages_data.js`, `viewer.html`,
-and the `attachments/` folder with every copied attachment except GIFs,
-which are skipped entirely) is self-contained and portable. The user can
-zip it, move it to a backup drive, or copy it to another machine and it
-still works, since it no longer depends on the originals in
+`~/iMessage-Vault` (`cloud-backup/` with `messages.json`,
+`messages_data.js` and `viewer.html`, plus `attachments/` with every copied
+attachment except GIFs, which are skipped entirely) is self-contained and
+portable. The user can zip it, move it to a backup drive, or copy it to
+another machine and it still works, as long as `cloud-backup/` and
+`attachments/` stay side by side, since it no longer depends on the originals in
 `~/Library/Messages/Attachments`. Worth mentioning if the user's goal is
 backup, not just browsing.
 
 If the user's goal is specifically backing up to somewhere like Google
-Drive, mention `python3 extract_imessages.py --archive` (or the "Create
+Drive, tell them to back up `~/iMessage-Vault/cloud-backup` (not the whole
+vault: attachments are gigabytes and reach the cloud inside the archive
+zips instead). For a one-off archive, mention `python3 extract_imessages.py --archive` (or the "Create
 Archive Backup" button in `export_panel.py`). It zips the current export
 together with a fresh `chat.db` snapshot into one dated file, ready to
 upload as a single unit. It doesn't pull new messages itself, so run a

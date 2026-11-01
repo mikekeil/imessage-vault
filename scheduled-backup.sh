@@ -7,7 +7,7 @@
 # into the launchd jobs:
 #   IMESSAGE_EXPORT_FLAGS  extra flags for extract_imessages.py; must match the
 #                          flags your export was made with (e.g. --max-image-dim)
-#   IMESSAGE_ARCHIVE_DIR   where archives go (default ~/iMessage-Export-Archives)
+#   IMESSAGE_ARCHIVE_DIR   where archives go (default ~/iMessage-Vault/cloud-backup/archives)
 #   IMESSAGE_MIRROR_DIR    optional second copy, e.g. a Google Drive folder
 #   IMESSAGE_KEEP_FULL     full archives to keep (default 2)
 #   IMESSAGE_PYTHON        the Python to run (default python3 on PATH); a fixed
@@ -20,7 +20,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 MODE="${1:?usage: scheduled-backup.sh daily|monthly}"
 REPO="${0:A:h}"
-ARCHIVE_DIR="${IMESSAGE_ARCHIVE_DIR:-$HOME/iMessage-Export-Archives}"
+ARCHIVE_DIR="${IMESSAGE_ARCHIVE_DIR:-$HOME/iMessage-Vault/cloud-backup/archives}"
 EXPORT_FLAGS=(${=IMESSAGE_EXPORT_FLAGS:-})
 PYTHON="${IMESSAGE_PYTHON:-python3}"
 
