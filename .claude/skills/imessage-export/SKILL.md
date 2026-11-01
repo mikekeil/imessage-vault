@@ -132,13 +132,23 @@ If the user wants recurring backups, point them at `install-schedule.sh`
 (daily export + monthly archive via launchd; see the README). Pass
 `--export-flags` matching the flags their existing export was made with,
 or incremental runs will switch to full-size originals. The jobs don't
-inherit Terminal's Full Disk Access: they need `/bin/zsh`, the real
-`python3` binary (`realpath "$(which python3)"`), and, for framework
-Pythons, `Python.app`, each with its toggle turned on. You can't grant
-these yourself. Give the user the exact paths, then confirm with the
-read-only `TCC.db` query and the `launchctl kickstart` test in the README's
-"Full Disk Access for scheduled jobs" section. Don't treat a grant as working
-until the log shows `Pulled N new messages`.
+inherit Terminal's Full Disk Access: they need `/bin/zsh` and the Python the
+installer prints (by default `/usr/bin/python3` plus the real Command Line
+Tools binary it runs), each with its toggle turned on. Recommend the default
+system Python: a Homebrew Python's grant is lost on every `brew upgrade`,
+because the grant belongs to the real binary, not the `python3` symlink. If
+the user passes `--python` with a Homebrew or framework Python, they need
+its real binary (`realpath`) and, for framework builds, `Python.app`. You
+can't grant these yourself. Give the user the exact paths, then confirm with
+the read-only `TCC.db` query and the `launchctl kickstart` test in the
+README's "Full Disk Access for scheduled jobs" section. Don't treat a grant as
+working until the log shows `Pulled N new messages`.
+
+To check on existing backups, run `./check-backup.sh` (no Full Disk Access
+needed; exit 1 means a check failed). A daily job failing with `unable to
+open database file` after it used to work usually means a Python upgrade
+revoked the grant. Suggest re-running `install-schedule.sh` to switch to the
+system Python.
 
 To rebuild messages from archives, run
 `python3 backup_archive.py restore <zips...> -o <new folder>` (add

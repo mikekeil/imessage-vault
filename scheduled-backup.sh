@@ -10,8 +10,10 @@
 #   IMESSAGE_ARCHIVE_DIR   where archives go (default ~/iMessage-Export-Archives)
 #   IMESSAGE_MIRROR_DIR    optional second copy, e.g. a Google Drive folder
 #   IMESSAGE_KEEP_FULL     full archives to keep (default 2)
+#   IMESSAGE_PYTHON        the Python to run (default python3 on PATH); a fixed
+#                          path keeps its Full Disk Access grant across upgrades
 #
-# Needs Full Disk Access for /bin/zsh, the launchd job's program, to read chat.db.
+# Needs Full Disk Access for /bin/zsh and the Python binary to read chat.db.
 
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -20,6 +22,7 @@ MODE="${1:?usage: scheduled-backup.sh daily|monthly}"
 REPO="${0:A:h}"
 ARCHIVE_DIR="${IMESSAGE_ARCHIVE_DIR:-$HOME/iMessage-Export-Archives}"
 EXPORT_FLAGS=(${=IMESSAGE_EXPORT_FLAGS:-})
+PYTHON="${IMESSAGE_PYTHON:-python3}"
 
 notify_failure() {
   osascript -e "display notification \"$MODE backup failed; see ~/Library/Logs/imessage-vault\" with title \"iMessage Vault\"" || true
@@ -28,11 +31,12 @@ trap notify_failure ERR
 
 cd "$REPO"
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') $MODE backup"
-python3 extract_imessages.py "${EXPORT_FLAGS[@]}"
+echo "Python: $PYTHON"
+"$PYTHON" extract_imessages.py "${EXPORT_FLAGS[@]}"
 
 if [[ "$MODE" == "monthly" ]]; then
   ARCHIVE_ARGS=(--archive-dir "$ARCHIVE_DIR" --keep-full "${IMESSAGE_KEEP_FULL:-2}")
   [[ -n "${IMESSAGE_MIRROR_DIR:-}" ]] && ARCHIVE_ARGS+=(--mirror-dir "$IMESSAGE_MIRROR_DIR")
-  python3 backup_archive.py create "${ARCHIVE_ARGS[@]}"
+  "$PYTHON" backup_archive.py create "${ARCHIVE_ARGS[@]}"
 fi
 echo "=== done"

@@ -161,11 +161,18 @@ daily incremental export, and a monthly archive run.
   drive, or a Google Drive / iCloud Drive / Dropbox folder). Leave it out to
   keep everything local.
 - `--keep-full N`: full archives to keep (default 2); see below.
+- `--python PATH`: the Python the jobs run. Defaults to macOS's own
+  `/usr/bin/python3` when the Command Line Tools are installed (otherwise the
+  `python3` on your `PATH`), because its Full Disk Access grant survives
+  upgrades. See [Choosing a Python that keeps its access](#choosing-a-python-that-keeps-its-access).
 - `--uninstall`: remove both jobs.
 
-Logs go to `~/Library/Logs/imessage-vault/`, and a failed run posts a macOS
-notification. The jobs need their own Full Disk Access; see the next section
-before relying on them.
+Logs go to `~/Library/Logs/imessage-vault/`, and a failed run tries to post a
+macOS notification. Don't rely on that alone: a notification from a background
+job is easy to miss, or may not show at all. See
+[Checking that backups are running](#checking-that-backups-are-running). The
+jobs need their own Full Disk Access; see the next section before relying on
+them.
 
 ### Full Disk Access for scheduled jobs
 
@@ -217,9 +224,30 @@ A working run prints `Pulled N new messages; ...` followed by `=== done`.
 Check the timestamp on the last `=== ... daily backup` line: if you read the
 log too soon, you're looking at the previous run.
 
-**After a Python upgrade** (`brew upgrade`), the versioned path changes and
-the grant no longer applies. If the job starts failing after an upgrade,
-grant the new path and test again.
+### Choosing a Python that keeps its access
+
+A Full Disk Access grant belongs to one specific binary, not to a name. A
+symlink such as `/opt/homebrew/bin/python3` doesn't help: macOS checks the
+real file it points to, and `brew upgrade` (even a patch release) installs a
+new file in a new versioned folder. The grant stays with the old one, and the
+jobs fail silently every night from then on until someone notices.
+
+The installer therefore defaults to `/usr/bin/python3`, the Python that ships
+with Apple's Command Line Tools (`xcode-select --install`). It's
+Apple-signed and changes only with macOS or Command Line Tools updates, so its
+grant holds. The scripts use only the standard library and run on its
+Python 3.9. Grant both paths the installer prints: `/usr/bin/python3` and the
+real binary it runs
+(`/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9`).
+
+If you'd rather keep a Homebrew or python.org Python, pass `--python` with its
+path, and after every Python upgrade grant the new real binary and test again.
+[`check-backup.sh`](#checking-that-backups-are-running) tells you when it
+breaks.
+
+Already installed with an older version of this repo? Re-run
+`install-schedule.sh` with your usual flags to switch the jobs to the stable
+Python, then grant the printed paths.
 
 Granting `/bin/zsh` lets any zsh script read your Messages. To narrow that,
 grant only the Python entries and change the plist's `ProgramArguments` to
@@ -232,6 +260,34 @@ toggles are on, instead of assuming a grant worked. A sandboxed agent may
 also be able to read `chat.db` but not write to `~/iMessage-Export`. If an
 export fails with `PermissionError` on `messages.json`, that's the agent's
 sandbox, not Full Disk Access; have the person run the command.
+
+### Checking that backups are running
+
+A backup that stopped weeks ago looks the same as one that ran last night,
+until you need it. `check-backup.sh` reads only the job logs and file sizes
+(never your messages, so it needs no Full Disk Access) and prints one line per
+check:
+
+```
+$ ./check-backup.sh
+OK    daily: last run 2026-11-02 03:15:00 finished
+OK    monthly: last run 2026-11-01 04:15:00 finished
+OK    archive: iMessage-Export-Monthly-2026-11-01-60087-61210.zip, 1 days old
+OK    mirror: iMessage-Export-Monthly-2026-11-01-60087-61210.zip is in /path/to/mirror
+```
+
+It checks that the last daily and monthly runs finished, that the daily job
+ran within 2 days (`--max-age-days`), that the newest archive is at most 35
+days old (`--max-archive-age-days`), and that the archive is in your
+`--mirror-dir` at the same size. It reads the folders from the installed
+jobs. It exits 1 if any check fails, so you can hook it into whatever already
+alerts you, for example a daily script that posts a notification or opens a
+task:
+
+```bash
+~/path/to/imessage-vault/check-backup.sh > /tmp/imessage-check.txt || \
+  osascript -e 'display notification "iMessage backup is failing" with title "iMessage Vault"'
+```
 
 ### How the archives stay small but redundant
 
